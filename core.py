@@ -36,7 +36,7 @@ class CircuitBreaker:
                     return True
                 return False
             if self.state == "HALF_OPEN":
-                return False  # Only one test request allowed per recovery cycle
+                return False  
             return False
 
     def record_success(self):
@@ -106,7 +106,6 @@ class SystemState:
             logger.info(f"Alerts {'enabled' if value else 'disabled'}.")
 
     def queue_alert(self, msg: str, force: bool = False):
-        """Non-blocking queueing with forced eviction for critical system alerts."""
         with self._lock:
             if not self.alerts_enabled and not force:
                 return
@@ -114,7 +113,7 @@ class SystemState:
             self.alert_queue.put_nowait((time.time(), msg))
         except queue.Full:
             if force:
-                try: self.alert_queue.get_nowait() # Evict oldest
+                try: self.alert_queue.get_nowait() 
                 except queue.Empty: pass
                 try: self.alert_queue.put_nowait((time.time(), msg))
                 except queue.Full: pass

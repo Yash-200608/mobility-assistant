@@ -50,6 +50,10 @@ def speak_thread():
             )
             audio_bytes = b"".join(list(audio_gen))
             
+            if len(audio_bytes) < 100:
+                logger.error("ElevenLabs returned empty or invalid audio payload.")
+                continue
+            
             tmp_path = None
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
@@ -127,7 +131,17 @@ def roboflow_thread():
     if not Config.ROBOFLOW_API_KEY:
         logger.warning("Roboflow disabled — missing API key.")
         return
-    url = f"https://detect.roboflow.com/{Config.ROBOFLOW_MODEL}"
+        
+    model_urls = []
+    if hasattr(Config, 'ROBOFLOW_MODEL_1') and Config.ROBOFLOW_MODEL_1:
+        model_urls.append(f"https://detect.roboflow.com/{Config.ROBOFLOW_MODEL_1}")
+    if hasattr(Config, 'ROBOFLOW_MODEL_2') and Config.ROBOFLOW_MODEL_2:
+        model_urls.append(f"https://detect.roboflow.com/{Config.ROBOFLOW_MODEL_2}")
+        
+    if not model_urls:
+        logger.error("No Roboflow models defined in Config.")
+        return
+
     while not global_state.is_shutting_down:
         try:
             start_t = time.time()
@@ -140,30 +154,40 @@ def roboflow_thread():
                 h, w = frame.shape[:2]
                 resized = cv2.resize(frame, Config.ROBOFLOW_RESIZE)
                 _, enc = cv2.imencode('.jpg', resized, [int(cv2.IMWRITE_JPEG_QUALITY), Config.ROBOFLOW_JPEG_QUALITY])
+                img_data = base64.b64encode(enc).decode("utf-8")
                 
-                resp = requests.post(
-                    url, data=base64.b64encode(enc).decode("utf-8"),
-                    params={"api_key": Config.ROBOFLOW_API_KEY, "confidence": Config.ROBOFLOW_CONFIDENCE, "overlap": Config.ROBOFLOW_OVERLAP},
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=2.0
-                )
-                if resp.status_code == 200:
+                all_preds = []
+                success = False
+
+                for url in model_urls:
+                    try:
+                        resp = requests.post(
+                            url, data=img_data,
+                            params={"api_key": Config.ROBOFLOW_API_KEY, "confidence": Config.ROBOFLOW_CONFIDENCE, "overlap": Config.ROBOFLOW_OVERLAP},
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                            timeout=2.0
+                        )
+                        if resp.status_code == 200:
+                            all_preds.extend(resp.json().get("predictions", []))
+                            success = True
+                    except requests.exceptions.RequestException:
+                        pass # Silently fail and try the next model/frame
+
+                if success:
                     vision_circuit.record_success()
-                    preds = resp.json().get("predictions", [])
-                    for p in preds:
+                    for p in all_preds:
                         p["x"] *= (w / Config.ROBOFLOW_RESIZE[0])
                         p["y"] *= (h / Config.ROBOFLOW_RESIZE[1])
                         p["width"] *= (w / Config.ROBOFLOW_RESIZE[0])
                         p["height"] *= (h / Config.ROBOFLOW_RESIZE[1])
-                    global_state.set_detections(preds)
+                    global_state.set_detections(all_preds)
                 else:
                     vision_circuit.record_failure()
+                    
             elapsed = time.time() - start_t
             time.sleep(max(0, Config.ROBOFLOW_MIN_INTERVAL - elapsed))
-        except requests.exceptions.RequestException as e:
-            vision_circuit.record_failure()
-            safe_err = str(e).replace(Config.ROBOFLOW_API_KEY, "REDACTED")
-            logger.error(f"Roboflow Network Error: {safe_err}")
+        except Exception as e:
+            logger.error(f"Roboflow Thread Error: {type(e).__name__}")
             time.sleep(2.0)
 
 def start_io_services():

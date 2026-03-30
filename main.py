@@ -87,19 +87,21 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts):
     cv2.putText(frame, f"ALERTS: {'ON' if current_alerts else 'OFF'}", (10, 60), 0, 0.6, alert_color, 2)
     cv2.putText(frame, f"POSTURE: {fall_state}", (10, 90), 0, 0.6, (0, 0, 255) if fall_state in ["FALLING", "FALLEN"] else (0, 255, 0), 2)
     
-    # Ultrasonic obstacle alert
-    us_f = sensors.get("us_front", 999)
-    if us_f < Config.US_FRONT_STOP_CM:
+    # Ultrasonic obstacle alert with Hardware Fault Tolerance
+    us_f = sensors.get("us_front", 999.0)
+    if us_f == -1.0:
+        cv2.putText(frame, "FRONT SENSOR FAULT", (180, 55), 0, 0.7, (0, 165, 255), 2)
+    elif us_f < Config.US_FRONT_STOP_CM:
         cv2.putText(frame, "STOP! Obstacle", (180, 55), 0, 0.7, (0, 0, 255), 2)
         if t - last_us > Config.ULTRASONIC_ALERT_INTERVAL:
-            global_state.queue_alert("Stop! Obstacle immediately ahead.")
+            global_state.queue_alert("Stop! Obstacle immediately ahead.", force=True)
             last_us = t
     elif us_f < Config.US_FRONT_WARN_CM:
         cv2.putText(frame, f"Obstacle: {int(us_f)}cm", (180, 55), 0, 0.7, (0, 165, 255), 2)
 
     # Drop-off / stairs detection
-    us_floor = sensors.get("us_floor", 10)
-    if us_floor > Config.US_FLOOR_DROPOFF_CM or detect_dropoff(frame):
+    us_floor = sensors.get("us_floor", 10.0)
+    if us_floor != -1.0 and (us_floor > Config.US_FLOOR_DROPOFF_CM or detect_dropoff(frame)):
         cv2.putText(frame, "DROP-OFF/STAIRS DETECTED", (180, 100), 0, 0.7, (0, 0, 255), 2)
         if t - last_stairs > Config.STAIRS_ALERT_INTERVAL:
             global_state.queue_alert("Caution. Drop off or stairs detected.")
@@ -127,10 +129,9 @@ def main():
     
     try:
         while True:
-            # Poll for frame (non-blocking with short sleep for CPU friendliness)
+            time.sleep(0.01)
             frame = global_state.get_frame()
             if frame is None:
-                time.sleep(0.01)
                 continue
             
             # Thread-safe snapshot of shared state
@@ -208,7 +209,7 @@ def main():
     finally:
         logger.info("Executing safe teardown procedures...")
         global_state.is_shutting_down = True
-        time.sleep(0.5)  # Allow threads to cleanly close I/O handles
+        time.sleep(0.5)  
         cv2.destroyAllWindows()
         if pose: pose.close()
 

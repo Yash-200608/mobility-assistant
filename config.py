@@ -12,11 +12,11 @@ class Config:
     ELEVENLABS_API_KEY: str | None = os.getenv("ELEVENLABS_API_KEY")
 
     # System
-    CAMERA_URL: str = os.getenv("CAMERA_URL", "http://192.168.1.2:8080/video")
+    CAMERA_URL: str = os.getenv("CAMERA_URL", "http://192.168.1.3:8080/video")
     ARDUINO_BAUD: int = 115200
     LOG_LEVEL: int = logging.INFO
 
-    # Vision & ML
+    # Vision & ML (Dual-Model Support)
     ROBOFLOW_MODEL_1: str = "coco/38" 
     ROBOFLOW_MODEL_2: str = "stairs-kjyma/1"
     ROBOFLOW_MIN_INTERVAL: float = 0.5
@@ -35,8 +35,8 @@ class Config:
 
     # Sensor Thresholds (Strict Clamping Limits for Hardware Validation)
     SENSOR_LIMITS = {
-        "us_front": (0.0, 999.0),
-        "us_floor": (0.0, 999.0),
+        "us_front": (-1.0, 999.0),  # Allowed -1.0 for hardware fault states
+        "us_floor": (-1.0, 999.0),
         "fsr_left": (0.0, 1023.0),
         "fsr_right": (0.0, 1023.0),
         "pitch": (-180.0, 180.0),

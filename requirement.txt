@@ -1,0 +1,10 @@
+opencv-python>=4.9
+numpy>=1.26
+mediapipe>=0.10
+sounddevice>=0.4
+groq>=0.4
+elevenlabs>=1.2
+requests>=2.31
+python-dotenv>=1.0
+pygame>=2.5
+pyserial>=3.5

@@ -17,7 +17,8 @@ class Config:
     LOG_LEVEL: int = logging.INFO
 
     # Vision & ML
-    ROBOFLOW_MODEL: str = "coco/13"
+    ROBOFLOW_MODEL_1: str = "coco/38" 
+    ROBOFLOW_MODEL_2: str = "stairs-kjyma/1"
     ROBOFLOW_MIN_INTERVAL: float = 0.5
     ROBOFLOW_CONFIDENCE: int = 30
     ROBOFLOW_JPEG_QUALITY: int = 50

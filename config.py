@@ -6,9 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    # API Keys (Graceful degradation: None is permitted)
+    # API Keys (Roboflow is gone!)
     GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
-    ROBOFLOW_API_KEY: str | None = os.getenv("ROBOFLOW_API_KEY")
     ELEVENLABS_API_KEY: str | None = os.getenv("ELEVENLABS_API_KEY")
 
     # System
@@ -16,14 +15,10 @@ class Config:
     ARDUINO_BAUD: int = 115200
     LOG_LEVEL: int = logging.INFO
 
-    # Vision & ML (Dual-Model Support)
-    ROBOFLOW_MODEL_1: str = "coco/38" 
-    ROBOFLOW_MODEL_2: str = "stairs-kjyma/1"
-    ROBOFLOW_MIN_INTERVAL: float = 0.5
-    ROBOFLOW_CONFIDENCE: int = 30
-    ROBOFLOW_JPEG_QUALITY: int = 50
-    ROBOFLOW_OVERLAP: int = 45
-    ROBOFLOW_RESIZE: Tuple[int, int] = (320, 240)
+    # Vision & ML (Local Edge AI)
+    LOCAL_MODEL_WEIGHTS: str = "yolov8n.pt" # Auto-downloads once, then 100% offline
+    VISION_MIN_INTERVAL: float = 0.1 # We can run much faster now!
+    VISION_CONFIDENCE: float = 0.45
     TRACKED_TTL: int = 10
     IOU_MATCH_THRESH: float = 0.3
 
@@ -33,15 +28,15 @@ class Config:
     WAKE_WORD: str = "assistant"
     PYGAME_FREQ: int = 44100
 
-    # Sensor Thresholds (Strict Clamping Limits for Hardware Validation)
+    # Sensor Thresholds (Strict Clamping Limits)
     SENSOR_LIMITS = {
-        "us_front": (-1.0, 999.0),  # Allowed -1.0 for hardware fault states
+        "us_front": (-1.0, 999.0),  
         "us_floor": (-1.0, 999.0),
         "fsr_left": (0.0, 1023.0),
         "fsr_right": (0.0, 1023.0),
         "pitch": (-180.0, 180.0),
         "roll": (-180.0, 180.0),
-        "accel_mag": (0.0, 16.0) # Assuming 16G max scale
+        "accel_mag": (0.0, 16.0) 
     }
     
     US_FRONT_WARN_CM: int = 80

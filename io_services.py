@@ -1,12 +1,10 @@
 import os
 import time
 import queue
-import base64
 import tempfile
 import threading
 import numpy as np
 import cv2
-import requests
 import sounddevice as sd
 import pygame
 import groq
@@ -120,76 +118,61 @@ def camera_thread():
                 global_state.set_frame(frame)
             else:
                 time.sleep(0.05)
-                cap.release()  # Prevent handle leak
+                cap.release() 
                 cap = cv2.VideoCapture(Config.CAMERA_URL)
         except Exception as e:
             logger.error(f"Camera error: {e}")
             time.sleep(1.0)
     cap.release()
 
-def roboflow_thread():
-    if not Config.ROBOFLOW_API_KEY:
-        logger.warning("Roboflow disabled — missing API key.")
-        return
+def local_vision_thread():
+    logger.info("Loading Local YOLOv8 Engine...")
+    try:
+        from ultralytics import YOLO
+        import logging
+        logging.getLogger("ultralytics").setLevel(logging.WARNING) 
         
-    model_urls = []
-    if hasattr(Config, 'ROBOFLOW_MODEL_1') and Config.ROBOFLOW_MODEL_1:
-        model_urls.append(f"https://detect.roboflow.com/{Config.ROBOFLOW_MODEL_1}")
-    if hasattr(Config, 'ROBOFLOW_MODEL_2') and Config.ROBOFLOW_MODEL_2:
-        model_urls.append(f"https://detect.roboflow.com/{Config.ROBOFLOW_MODEL_2}")
-        
-    if not model_urls:
-        logger.error("No Roboflow models defined in Config.")
+        model = YOLO(Config.LOCAL_MODEL_WEIGHTS)
+        logger.info("Local Edge AI Online.")
+    except Exception as e:
+        logger.error(f"Failed to load local model: {e}")
         return
 
     while not global_state.is_shutting_down:
         try:
             start_t = time.time()
-            if not vision_circuit.can_execute():
-                time.sleep(2.0)
-                continue
-                
             frame = global_state.get_frame()
+            
             if frame is not None:
-                h, w = frame.shape[:2]
-                resized = cv2.resize(frame, Config.ROBOFLOW_RESIZE)
-                _, enc = cv2.imencode('.jpg', resized, [int(cv2.IMWRITE_JPEG_QUALITY), Config.ROBOFLOW_JPEG_QUALITY])
-                img_data = base64.b64encode(enc).decode("utf-8")
+                results = model.predict(frame, conf=Config.VISION_CONFIDENCE, verbose=False)
                 
                 all_preds = []
-                success = False
-
-                for url in model_urls:
-                    try:
-                        resp = requests.post(
-                            url, data=img_data,
-                            params={"api_key": Config.ROBOFLOW_API_KEY, "confidence": Config.ROBOFLOW_CONFIDENCE, "overlap": Config.ROBOFLOW_OVERLAP},
-                            headers={"Content-Type": "application/x-www-form-urlencoded"},
-                            timeout=2.0
-                        )
-                        if resp.status_code == 200:
-                            all_preds.extend(resp.json().get("predictions", []))
-                            success = True
-                    except requests.exceptions.RequestException:
-                        pass # Silently fail and try the next model/frame
-
-                if success:
+                for r in results:
+                    for box in r.boxes:
+                        x1, y1, x2, y2 = box.xyxy[0].tolist()
+                        cls_id = int(box.cls[0].item())
+                        label = model.names[cls_id]
+                        
+                        all_preds.append({
+                            "class": label,
+                            "x": (x1 + x2) / 2,
+                            "y": (y1 + y2) / 2,
+                            "width": x2 - x1,
+                            "height": y2 - y1
+                        })
+                
+                if all_preds:
                     vision_circuit.record_success()
-                    for p in all_preds:
-                        p["x"] *= (w / Config.ROBOFLOW_RESIZE[0])
-                        p["y"] *= (h / Config.ROBOFLOW_RESIZE[1])
-                        p["width"] *= (w / Config.ROBOFLOW_RESIZE[0])
-                        p["height"] *= (h / Config.ROBOFLOW_RESIZE[1])
-                    global_state.set_detections(all_preds)
-                else:
-                    vision_circuit.record_failure()
-                    
+                
+                global_state.set_detections(all_preds)
+                
             elapsed = time.time() - start_t
-            time.sleep(max(0, Config.ROBOFLOW_MIN_INTERVAL - elapsed))
+            time.sleep(max(0, Config.VISION_MIN_INTERVAL - elapsed))
+            
         except Exception as e:
-            logger.error(f"Roboflow Thread Error: {type(e).__name__}")
+            logger.error(f"Local Vision Error: {type(e).__name__}")
             time.sleep(2.0)
 
 def start_io_services():
-    for target in [camera_thread, speak_thread, audio_listener, roboflow_thread]:
+    for target in [camera_thread, speak_thread, audio_listener, local_vision_thread]:
         threading.Thread(target=target, daemon=True).start()

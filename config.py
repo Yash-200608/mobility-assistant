@@ -11,7 +11,7 @@ class Config:
     ELEVENLABS_API_KEY: str | None = os.getenv("ELEVENLABS_API_KEY")
 
     # System
-    CAMERA_URL: str = os.getenv("CAMERA_URL", "http://192.168.1.3:8080/video")
+    CAMERA_URL: str = os.getenv("CAMERA_URL", "1")
     ARDUINO_BAUD: int = 115200
     LOG_LEVEL: int = logging.INFO
 

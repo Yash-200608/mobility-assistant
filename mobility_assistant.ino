@@ -7,8 +7,7 @@
 #define US_FRONT_ECHO 3
 #define US_FLOOR_TRIG 4
 #define US_FLOOR_ECHO 5
-#define FSR_LEFT_PIN A0
-#define FSR_RIGHT_PIN A1
+#define SOS_BUTTON_PIN 6 
 #define GPS_RX_PIN 10
 #define GPS_TX_PIN 11
 
@@ -24,8 +23,11 @@ void setup() {
   Serial.begin(115200);
   ss.begin(9600);
   Wire.begin();
+  
   pinMode(US_FRONT_TRIG, OUTPUT); pinMode(US_FRONT_ECHO, INPUT);
   pinMode(US_FLOOR_TRIG, OUTPUT); pinMode(US_FLOOR_ECHO, INPUT);
+  pinMode(SOS_BUTTON_PIN, INPUT_PULLUP); // Activate internal pull-up resistor
+  
   mpu.setup(0x68);
   last_time = millis();
 }
@@ -34,10 +36,11 @@ long readUltrasonic(int trigPin, int echoPin, int &failCount) {
   digitalWrite(trigPin, LOW); delayMicroseconds(2);
   digitalWrite(trigPin, HIGH); delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
+  
   long duration = pulseIn(echoPin, HIGH, 12000); 
   if (duration == 0) {
     failCount++;
-    if (failCount > 10) return -1;  // Signal sensor failure
+    if (failCount > 10) return -1;
     return 999;
   }
   failCount = 0;
@@ -46,16 +49,18 @@ long readUltrasonic(int trigPin, int echoPin, int &failCount) {
 
 void loop() {
   unsigned long current_time = millis();
+  
+  // Read physical button (LOW means the user pressed it)
+  int sos_state = digitalRead(SOS_BUTTON_PIN) == LOW ? 1 : 0;
+  
   float dt = (current_time - last_time) / 1000.0;
-  if (dt > 0.2) dt = 0.05;  // Clamp to prevent filter blowup on stalls
+  if (dt > 0.2) dt = 0.05;
   last_time = current_time;
-
+  
   static int front_fail = 0;
   static int floor_fail = 0;
   long us_front = readUltrasonic(US_FRONT_TRIG, US_FRONT_ECHO, front_fail);
   long us_floor = readUltrasonic(US_FLOOR_TRIG, US_FLOOR_ECHO, floor_fail);
-  int fsr_left = analogRead(FSR_LEFT_PIN);
-  int fsr_right = analogRead(FSR_RIGHT_PIN);
 
   mpu.update();
   float ax = mpu.getAccX(), ay = mpu.getAccY(), az = mpu.getAccZ();
@@ -73,10 +78,9 @@ void loop() {
   float gps_spd = gps.speed.isValid() ? gps.speed.kmph() : 0.0;
   int gps_fix = gps.location.isValid() ? 1 : 0;
 
+  // Clean, singular JSON payload for Python parsing
   Serial.print(F("{\"us_front\":")); Serial.print(us_front);
   Serial.print(F(",\"us_floor\":")); Serial.print(us_floor);
-  Serial.print(F(",\"fsr_left\":")); Serial.print(fsr_left);
-  Serial.print(F(",\"fsr_right\":")); Serial.print(fsr_right);
   Serial.print(F(",\"ax\":")); Serial.print(ax, 2);
   Serial.print(F(",\"ay\":")); Serial.print(ay, 2);
   Serial.print(F(",\"az\":")); Serial.print(az, 2);
@@ -90,6 +94,7 @@ void loop() {
   Serial.print(F(",\"gps_lng\":")); Serial.print(gps_lng, 6);
   Serial.print(F(",\"gps_spd\":")); Serial.print(gps_spd, 2);
   Serial.print(F(",\"gps_fix\":")); Serial.print(gps_fix);
+  Serial.print(F(",\"sos\":")); Serial.print(sos_state);
   Serial.println(F("}"));
 
   unsigned long elapsed = millis() - current_time;

@@ -7,6 +7,7 @@ from core import global_state, logger
 from hardware import HardwareManager
 from analytics import FallDetector, GaitAnalyser
 from io_services import start_io_services
+from twilio.rest import Client
 
 try: mp_pose = mp.solutions.pose; pose = mp_pose.Pose(min_detection_confidence=0.6, min_tracking_confidence=0.6)
 except Exception: pose = None
@@ -47,9 +48,7 @@ class ObjectTracker:
         return updated
 
 def estimate_dist(x1, y1, x2, y2, w, h):
-    """Estimates distance with guards against zero-area and negative-area boxes."""
-    if w <= 0 or h <= 0:
-        return "far"
+    if w <= 0 or h <= 0: return "far"
     area = max(0, (x2 - x1)) * max(0, (y2 - y1))
     ratio = area / (w * h)
     for t, l in Config.DIST_THRESHOLDS:
@@ -57,7 +56,6 @@ def estimate_dist(x1, y1, x2, y2, w, h):
     return "far"
 
 def detect_dropoff(frame: np.ndarray) -> bool:
-    """Detects floor drop-off or stairs using Canny edge density on the bottom 35%."""
     try:
         h, w = frame.shape[:2]
         roi = frame[int(h * 0.65):h, 0:w]
@@ -70,13 +68,33 @@ def detect_dropoff(frame: np.ndarray) -> bool:
         logger.warning(f"Dropoff detection failed: {e}")
         return False
 
+def send_emergency_sos(sensors):
+    lat = sensors.get("gps_lat", 0.0)
+    lng = sensors.get("gps_lng", 0.0)
+    map_link = f"https://www.google.com/maps?q={lat},{lng}"
+    
+    try:
+        client = Client(Config.TWILIO_SID, Config.TWILIO_TOKEN)
+        msg_body = (
+            f"🚨 EMERGENCY: Yash has pressed the SOS button on his AI Mobility Assistant.\n"
+            f"Location: {map_link}\n"
+            f"Time: {time.strftime('%H:%M:%S')}"
+        )
+        message = client.messages.create(
+            body=msg_body,
+            from_=Config.TWILIO_PHONE,
+            to=Config.EMERGENCY_PHONE
+        )
+        logger.info(f"SOS SMS dispatched successfully: {message.sid}")
+    except Exception as e:
+        logger.error(f"Failed to send SOS: {e}")
+
 last_nav, last_stairs, last_us = 0.0, 0.0, 0.0
 tracker = ObjectTracker()
 fall_engine = FallDetector()
 gait_engine = GaitAnalyser()
 
 def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts):
-    """Renders safety HUD using pre-fetched thread-safe state snapshots."""
     global last_us, last_stairs
     t = time.time()
     h, w = frame.shape[:2]
@@ -86,7 +104,6 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts):
     cv2.putText(frame, f"ALERTS: {'ON' if current_alerts else 'OFF'}", (10, 60), 0, 0.6, alert_color, 2)
     cv2.putText(frame, f"POSTURE: {fall_state}", (10, 90), 0, 0.6, (0, 0, 255) if fall_state in ["FALLING", "FALLEN"] else (0, 255, 0), 2)
     
-    # Ultrasonic obstacle alert with Hardware Fault Tolerance
     us_f = sensors.get("us_front", 999.0)
     if us_f == -1.0:
         cv2.putText(frame, "FRONT SENSOR FAULT", (180, 55), 0, 0.7, (0, 165, 255), 2)
@@ -98,7 +115,6 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts):
     elif us_f < Config.US_FRONT_WARN_CM:
         cv2.putText(frame, f"Obstacle: {int(us_f)}cm", (180, 55), 0, 0.7, (0, 165, 255), 2)
 
-    # Drop-off / stairs detection
     us_floor = sensors.get("us_floor", 10.0)
     if us_floor != -1.0 and (us_floor > Config.US_FLOOR_DROPOFF_CM or detect_dropoff(frame)):
         cv2.putText(frame, "DROP-OFF/STAIRS DETECTED", (180, 100), 0, 0.7, (0, 0, 255), 2)
@@ -106,14 +122,12 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts):
             global_state.queue_alert("Caution. Drop off or stairs detected.")
             last_stairs = t
 
-    # Fall overlay
     if fall_state == "FALLEN":
         ov = frame.copy()
         cv2.rectangle(ov, (0,0), (w, h), (0,0,255), -1)
         frame = cv2.addWeighted(ov, 0.3, frame, 0.7, 0)
         cv2.putText(frame, "FALL DETECTED", (w//2-150, h//2), 0, 1.2, (0, 0, 255), 3)
     
-    # Arduino status
     ard_col = (0, 200, 0) if global_state.arduino_connected else (0, 0, 255)
     cv2.putText(frame, f"ARD:{'ON' if global_state.arduino_connected else 'OFF'}", (w-100, 60), 0, 0.5, ard_col, 2)
     return frame
@@ -129,22 +143,32 @@ def main():
     try:
         while True:
             time.sleep(0.01)
-            frame = global_state.get_frame()
-            if frame is None:
-                continue
             
-            # Thread-safe snapshot of shared state
+            # 1. Thread-safe snapshot of shared state
+            frame = global_state.get_frame()
+            sensors = global_state.get_sensor_data()
             current_mode = global_state.get_mode()
             current_alerts = global_state.get_alerts_enabled()
-            sensors = global_state.get_sensor_data()
+            
+            # Prevent crashes if camera is still warming up
+            if frame is None:
+                continue
+                
             h, w = frame.shape[:2]
 
-            # Critical Safety Engine
+            # 2. Check Physical SOS Button
+            sos_signal = sensors.get("sos", 0)
+            if sos_signal == 1:
+                global_state.queue_alert("S O S Activated. Notifying emergency contact.", force=True)
+                send_emergency_sos(sensors)
+                time.sleep(10) # 10 second cooldown to prevent duplicate text messages
+
+            # 3. Critical Safety Engine (Falls & Drops)
             fall_alert = fall_engine.process(sensors)
             if fall_alert: global_state.queue_alert(fall_alert, force=True)
             frame = render_safety_hud(frame, sensors, fall_engine.state, current_mode, current_alerts)
 
-            # Vision & Modes
+            # 4. Vision & Modes
             if current_mode == "stick":
                 dets = global_state.get_detections()
                 nav_objs = []
@@ -172,28 +196,36 @@ def main():
                     elif right_obs > 0 and left_obs == 0: global_state.queue_alert("Move left.")
                     last_nav = time.time()
 
-            else:  # Walker Mode
+            else:  # Walker Mode (Computer Vision Gait Analysis)
                 if pose:
                     try:
                         res = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                        if res.pose_landmarks: mp.solutions.drawing_utils.draw_landmarks(frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                        if res.pose_landmarks: 
+                            mp.solutions.drawing_utils.draw_landmarks(frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                            
+                            # Pass visual landmarks to the new Gait Engine
+                            metrics = gait_engine.process_vision(res.pose_landmarks.landmark)
+                            gait_alert = gait_engine.get_alert(metrics)
+                            if gait_alert: global_state.queue_alert(gait_alert)
+                            
+                            # Gait HUD
+                            cv2.putText(frame, f"State: {metrics['pattern']}", (10, h-40), 0, 0.6, (0, 255, 0), 2)
+                            
+                            sym = metrics["symmetry"]
+                            sym_col = (0, 255, 0) if sym > 85 else (0, 165, 255) if sym > 70 else (0, 0, 255)
+                            cv2.putText(frame, f"Symmetry: {sym}%", (250, h-40), 0, 0.6, sym_col, 2)
+                            
+                            cad = metrics["cadence"]
+                            cad_col = (0, 255, 0) if cad > 60 else (0, 165, 255)
+                            cv2.putText(frame, f"Cadence: {cad} spm", (10, h-70), 0, 0.6, cad_col, 2)
+                            
+                            # Draw Virtual Floor Line
+                            floor_y = int(h * Config.GAIT_VIRTUAL_FLOOR_Y)
+                            cv2.line(frame, (0, floor_y), (w, floor_y), (255, 0, 255), 2)
+                            cv2.putText(frame, "Virtual Floor", (10, floor_y - 10), 0, 0.5, (255, 0, 255), 1)
+
                     except Exception as e:
                         logger.warning(f"Pose processing error: {e}")
-                
-                metrics = gait_engine.process(sensors)
-                gait_alert = gait_engine.get_alert(metrics)
-                if gait_alert: global_state.queue_alert(gait_alert)
-                
-                # Gait HUD
-                pat_col = (0, 255, 0) if metrics["confidence"] > 0.85 else (0, 200, 255)
-                cv2.putText(frame, f"Gait: {metrics['pattern']} ({metrics['confidence']*100:.0f}%)", (10, h-40), 0, 0.6, pat_col, 2)
-                sym = metrics["symmetry"] or 0
-                sym_col = (0, 255, 0) if sym > 85 else (0, 165, 255) if sym > 70 else (0, 0, 255)
-                cv2.putText(frame, f"Symmetry: {sym}%", (250, h-40), 0, 0.6, sym_col, 2)
-                cad_col = (0, 255, 0) if (metrics["cadence"] or 0) > 60 else (0, 165, 255)
-                cv2.putText(frame, f"Cadence: {metrics['cadence'] or 0} spm", (10, h-70), 0, 0.6, cad_col, 2)
-                if metrics["affected"]:
-                    cv2.putText(frame, f"Affected: {metrics['affected']}", (250, h-70), 0, 0.6, (0, 200, 255), 2)
 
             # FPS overlay
             curr = time.time()

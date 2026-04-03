@@ -1,10 +1,12 @@
-opencv-python>=4.9
-numpy>=1.26
+opencv-python==4.10.0.84
+ultralytics
 mediapipe>=0.10
+numpy>=1.26
+pygame>=2.5
 sounddevice>=0.4
 groq>=0.4
 elevenlabs>=1.2
-requests>=2.31
-python-dotenv>=1.0
-pygame>=2.5
 pyserial>=3.5
+twilio
+python-dotenv>=1.0
+requests>=2.31

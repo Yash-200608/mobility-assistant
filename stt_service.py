@@ -1,4 +1,3 @@
-"""Speech-to-text: local faster-whisper and/or Groq Whisper API."""
 
 import numpy as np
 
@@ -6,15 +5,11 @@ from audio_util import pcm_to_wav
 from config import Config
 from core import logger
 
-
 def transcribe_microphone_chunk(
     pcm_float32: np.ndarray,
     sample_rate: int,
     groq_client,
 ) -> str:
-    """
-    Return lowercased transcript. Respects STT_BACKEND: auto | local | groq.
-    """
     backend = (Config.STT_BACKEND or "auto").lower().strip()
     pcm_float32 = np.asarray(pcm_float32, dtype=np.float32)
 
@@ -47,7 +42,6 @@ def transcribe_microphone_chunk(
 
     return ""
 
-
 def stt_configured(groq_client) -> bool:
     backend = (Config.STT_BACKEND or "auto").lower().strip()
     if backend == "groq":
@@ -56,7 +50,7 @@ def stt_configured(groq_client) -> bool:
         return True
     if backend == "local" or (backend == "auto" and Config.LOCAL_STT_ENABLED):
         try:
-            import faster_whisper  # noqa: F401
+            import faster_whisper
         except ImportError:
             logger.error(
                 "Local STT selected but faster-whisper is missing. Run: pip install faster-whisper"

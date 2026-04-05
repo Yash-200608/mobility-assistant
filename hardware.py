@@ -22,7 +22,6 @@ class HardwareManager:
         return None
 
     def _validate_payload(self, data: dict) -> dict:
-        """Defensive clamping against hardware glitches."""
         clean = {}
         for key, val in data.items():
             try:
@@ -50,8 +49,8 @@ class HardwareManager:
                 with serial.Serial(self.port, Config.ARDUINO_BAUD, timeout=1) as ser:
                     global_state.arduino_connected = True
                     logger.info(f"Arduino hardware linked on {self.port}")
-                    backoff = 1.0 
-                    
+                    backoff = 1.0
+
                     while not global_state.is_shutting_down:
                         line = ser.readline().decode('utf-8', errors='ignore').strip()
                         if line.startswith('{'):
@@ -60,7 +59,7 @@ class HardwareManager:
                                 clean_data = self._validate_payload(payload)
                                 global_state.update_sensor_data(clean_data)
                             except json.JSONDecodeError:
-                                pass 
+                                pass
             except Exception as e:
                 global_state.arduino_connected = False
                 logger.warning(f"Hardware disconnected: {type(e).__name__}. Attempting recovery...")

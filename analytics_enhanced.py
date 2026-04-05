@@ -1,8 +1,3 @@
-"""
-Path A+B style analytics: gait fingerprinting, energy proxy, posture, pre-fall cues,
-phase asymmetry, stride proxy, fall-direction hint, rehab summary, adaptive coaching context.
-Not a medical device — research and coaching aids only.
-"""
 
 from __future__ import annotations
 
@@ -14,9 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import Config
 from core import logger
 
-
 class GaitFingerprint:
-    """Personalized rolling baseline for symmetry and cadence; deviation 0–100+."""
 
     def __init__(self, window: int = 45):
         self._sym = deque(maxlen=window)
@@ -44,9 +37,7 @@ class GaitFingerprint:
             return 0.0, 0.0
         return sum(self._sym) / len(self._sym), sum(self._cad) / len(self._cad)
 
-
 class EnergyExpenditure:
-    """Crude walking MET estimate from cadence (not calibrated to VO2)."""
 
     @staticmethod
     def estimate_met(cadence_spm: int, active_walk: bool) -> float:
@@ -54,9 +45,7 @@ class EnergyExpenditure:
             return 1.0
         return float(min(5.5, 2.0 + cadence_spm / 75.0))
 
-
 class PostureMonitor:
-    """Vision slouch proxy: nose vs mid-hip vertical gap in normalized frame coords."""
 
     @staticmethod
     def slouch_score(landmarks) -> int:
@@ -77,9 +66,7 @@ class PostureMonitor:
             return "Try gently lifting your chest and looking a little forward."
         return None
 
-
 class PreFallDetector:
-    """Rapid tilt-rate cue before committed fall FSM (hardware sensors)."""
 
     def __init__(self):
         self._pp = self._pr = 0.0
@@ -109,9 +96,7 @@ class PreFallDetector:
             return "Unsteady motion sensed. Widen your stance and hold something stable if needed."
         return None
 
-
 class PhaseDetector:
-    """Left vs right foot-strike balance from vision gait events."""
 
     def __init__(self):
         self.l_strikes = 0
@@ -133,9 +118,7 @@ class PhaseDetector:
     def reset(self) -> None:
         self.l_strikes = self.r_strikes = 0
 
-
 class StrideLengthProxy:
-    """Normalized ankle separation vs shoulder width (dimensionless gait proxy)."""
 
     @staticmethod
     def estimate(landmarks) -> float:
@@ -148,9 +131,7 @@ class StrideLengthProxy:
         except (IndexError, AttributeError, TypeError):
             return 0.0
 
-
 class FallDirectionPredictor:
-    """Coarse direction label from IMU tilt signs near a fall."""
 
     @staticmethod
     def predict(pitch_deg: float, roll_deg: float) -> str:
@@ -158,9 +139,7 @@ class FallDirectionPredictor:
             return "forward" if pitch_deg > 0 else "backward"
         return "to the right" if roll_deg > 0 else "to the left"
 
-
 class RehabProgressTracker:
-    """Session aggregates for dashboard / export."""
 
     def __init__(self):
         self.session_start = time.time()
@@ -192,9 +171,7 @@ class RehabProgressTracker:
             "slouch_alerts": self.slouch_alerts,
         }
 
-
 class AdaptiveCoachingEngine:
-    """Fatigue / strain hints for LLM context (not a diagnosis)."""
 
     @staticmethod
     def context_line(
@@ -215,7 +192,6 @@ class AdaptiveCoachingEngine:
         if not parts:
             parts.append("steady_state")
         return "coaching_hints=" + ",".join(parts)
-
 
 def build_rehab_frame(
     mode: str,
@@ -252,7 +228,6 @@ def build_rehab_frame(
         "audio_impact_hint": int(audio_impact),
         "fall_direction_hint": direction_hint,
     }
-
 
 RESEARCH_CSV_FIELDS = (
     "t",

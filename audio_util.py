@@ -1,10 +1,8 @@
-"""Shared audio helpers for STT uploads."""
 
 import io
 import wave
 
 import numpy as np
-
 
 def pcm_to_wav(pcm: np.ndarray, samplerate: int) -> bytes:
     pcm_int16 = (pcm * 32767).astype(np.int16)

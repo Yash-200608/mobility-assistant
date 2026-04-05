@@ -1,4 +1,3 @@
-"""Online LLM via Groq chat API when the network is reachable. Same API key as Whisper STT."""
 
 import socket
 from typing import Optional
@@ -16,7 +15,6 @@ CONTEXT from the app is approximate and may be wrong; do not claim you can see t
 
 _CONNECTIVITY_HOSTS = (("1.1.1.1", 53), ("8.8.8.8", 53))
 
-
 def is_internet_available(timeout: float = 2.5) -> bool:
     for host, port in _CONNECTIVITY_HOSTS:
         try:
@@ -25,7 +23,6 @@ def is_internet_available(timeout: float = 2.5) -> bool:
         except OSError:
             continue
     return False
-
 
 def mobility_context_snapshot() -> str:
     mode = global_state.get_mode()
@@ -42,7 +39,6 @@ def mobility_context_snapshot() -> str:
     if rehab:
         return f"{base}; {rehab}"
     return base
-
 
 def ask_mobility_llm(user_message: str, client: Groq) -> Optional[str]:
     if not Config.enable_online_llm():

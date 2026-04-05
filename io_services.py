@@ -15,7 +15,6 @@ from sos import try_voice_sos_from_transcript
 from stt_service import stt_configured, transcribe_microphone_chunk
 from voice_commands import handle_wake_utterance
 
-# --- AUDIO SERVICES ---
 groq_client = groq.Groq(api_key=Config.GROQ_API_KEY) if Config.GROQ_API_KEY else None
 el_client = ElevenLabs(api_key=Config.ELEVENLABS_API_KEY) if Config.ELEVENLABS_API_KEY else None
 
@@ -31,19 +30,19 @@ def speak_thread():
     while not global_state.is_shutting_down:
         try:
             timestamp, text = global_state.alert_queue.get(timeout=1.0)
-            if time.time() - timestamp > 8.0: continue # Drop stale alerts
-            
+            if time.time() - timestamp > 8.0: continue
+
             logger.info(f"Speaking: {text}")
             audio_gen = el_client.text_to_speech.convert(
                 text=text, voice_id=Config.ELEVENLABS_VOICE_ID,
                 model_id=Config.ELEVENLABS_MODEL, output_format="mp3_44100_128"
             )
             audio_bytes = b"".join(list(audio_gen))
-            
+
             if len(audio_bytes) < 100:
                 logger.error("ElevenLabs returned empty or invalid audio payload.")
                 continue
-            
+
             tmp_path = None
             try:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
@@ -51,7 +50,7 @@ def speak_thread():
                     tmp_path = fp.name
                 pygame.mixer.music.load(tmp_path)
                 pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy() and not global_state.is_shutting_down: 
+                while pygame.mixer.music.get_busy() and not global_state.is_shutting_down:
                     time.sleep(0.1)
             finally:
                 pygame.mixer.music.unload()
@@ -95,7 +94,6 @@ def audio_listener():
             logger.error(f"Voice Listener Error: {e}")
             time.sleep(1)
 
-# --- VISION & CAMERA SERVICES ---
 def camera_thread():
     cap = cv2.VideoCapture(Config.CAMERA_URL)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -107,7 +105,7 @@ def camera_thread():
                 global_state.set_frame(frame)
             else:
                 time.sleep(0.05)
-                cap.release() 
+                cap.release()
                 cap = cv2.VideoCapture(Config.CAMERA_URL)
         except Exception as e:
             logger.error(f"Camera error: {e}")
@@ -115,12 +113,12 @@ def camera_thread():
     cap.release()
 
 def local_vision_thread():
-    logger.info("Loading Local YOLOv8 Engine...")
+    logger.info(f"Loading local YOLO detector ({Config.LOCAL_MODEL_WEIGHTS})...")
     try:
         from ultralytics import YOLO
         import logging
-        logging.getLogger("ultralytics").setLevel(logging.WARNING) 
-        
+        logging.getLogger("ultralytics").setLevel(logging.WARNING)
+
         model = YOLO(Config.LOCAL_MODEL_WEIGHTS)
         logger.info("Local Edge AI Online.")
     except Exception as e:
@@ -141,17 +139,17 @@ def local_vision_thread():
                     interval = Config.VISION_FAST_INTERVAL
                 else:
                     interval = Config.VISION_SLOW_INTERVAL
-            
+
             if frame is not None:
                 results = model.predict(frame, conf=Config.VISION_CONFIDENCE, verbose=False)
-                
+
                 all_preds = []
                 for r in results:
                     for box in r.boxes:
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
                         cls_id = int(box.cls[0].item())
                         label = model.names[cls_id]
-                        
+
                         all_preds.append({
                             "class": label,
                             "x": (x1 + x2) / 2,
@@ -159,15 +157,15 @@ def local_vision_thread():
                             "width": x2 - x1,
                             "height": y2 - y1
                         })
-                
+
                 if all_preds:
                     vision_circuit.record_success()
-                
+
                 global_state.set_detections(all_preds)
-                
+
             elapsed = time.time() - start_t
             time.sleep(max(0, interval - elapsed))
-            
+
         except Exception as e:
             logger.error(f"Local Vision Error: {type(e).__name__}")
             time.sleep(2.0)

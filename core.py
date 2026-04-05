@@ -18,13 +18,12 @@ def setup_logger():
 logger = setup_logger()
 
 class CircuitBreaker:
-    """Prevents system hangs by cutting off failing external APIs."""
     def __init__(self, failure_threshold: int = 3, recovery_timeout: float = 30.0):
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.failures = 0
         self.last_failure_time = 0.0
-        self.state = "CLOSED" 
+        self.state = "CLOSED"
         self.lock = threading.Lock()
 
     def can_execute(self) -> bool:
@@ -36,7 +35,7 @@ class CircuitBreaker:
                     return True
                 return False
             if self.state == "HALF_OPEN":
-                return False  
+                return False
             return False
 
     def record_success(self):
@@ -53,7 +52,6 @@ class CircuitBreaker:
                 logger.warning("Circuit Breaker OPEN. API calls halted to prevent system drag.")
 
 class SystemState:
-    """Centralized, rigorously locked state container."""
     def __init__(self):
         self._lock = threading.RLock()
         self.mode: str = "stick"
@@ -110,7 +108,6 @@ class SystemState:
             return True
 
     def set_gait_metrics(self, metrics: Optional[Dict[str, Any]]):
-        """Latest walker-mode gait snapshot for offline voice (pattern, symmetry, cadence)."""
         with self._lock:
             if metrics is None:
                 self._last_gait_metrics = None
@@ -132,7 +129,6 @@ class SystemState:
             self.last_sensor_update_mono = time.monotonic()
 
     def sensors_fresh(self) -> bool:
-        """True when Arduino is connected and we have received telemetry recently."""
         with self._lock:
             if not self.arduino_connected:
                 return False
@@ -140,7 +136,6 @@ class SystemState:
             return age <= Config.SENSOR_STALE_SEC and self.last_sensor_update_mono > 0.0
 
     def use_hardware_for_safety(self) -> bool:
-        """Hardware may drive alerts only in fused mode with a live feed."""
         mode = (Config.SAFETY_RUN_MODE or "software_only").lower().strip()
         if mode != "fused":
             return False
@@ -185,7 +180,7 @@ class SystemState:
             self.alert_queue.put_nowait((time.time(), msg))
         except queue.Full:
             if force:
-                try: self.alert_queue.get_nowait() 
+                try: self.alert_queue.get_nowait()
                 except queue.Empty: pass
                 try: self.alert_queue.put_nowait((time.time(), msg))
                 except queue.Full: pass

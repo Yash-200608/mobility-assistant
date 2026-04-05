@@ -34,7 +34,7 @@ class ObjectTracker:
         now = time.time()
         for tid in [tid for tid, t in self.tracks.items() if now - t["last_seen"] > Config.TRACKED_TTL]:
             del self.tracks[tid]
-        
+
         updated = []
         unmatched = list(detections)
         for tid, track in list(self.tracks.items()):
@@ -49,12 +49,12 @@ class ObjectTracker:
                 union = (box1[2]-box1[0])*(box1[3]-box1[1]) + (box2[2]-box2[0])*(box2[3]-box2[1]) - inter
                 iou = inter / union if union > 0 else 0
                 if iou > best_iou: best_i, best_iou = i, iou
-            
+
             if best_iou > Config.IOU_MATCH_THRESH:
                 m = unmatched.pop(best_i)
                 track.update({"x1": m["x"]-m["width"]/2, "y1": m["y"]-m["height"]/2, "x2": m["x"]+m["width"]/2, "y2": m["y"]+m["height"]/2, "last_seen": now})
                 updated.append(track)
-                
+
         for m in unmatched:
             new_t = {"label": m["class"], "x1": m["x"]-m["width"]/2, "y1": m["y"]-m["height"]/2, "x2": m["x"]+m["width"]/2, "y2": m["y"]+m["height"]/2, "last_seen": now, "last_alert": 0, "id": self.next_id}
             self.tracks[self.next_id] = new_t
@@ -104,7 +104,7 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts, 
     alert_color = (0, 255, 0) if current_alerts else (0, 0, 255)
     cv2.putText(frame, f"ALERTS: {'ON' if current_alerts else 'OFF'}", (10, 60), 0, 0.6, alert_color, 2)
     cv2.putText(frame, f"POSTURE: {fall_state}", (10, 90), 0, 0.6, (0, 0, 255) if fall_state in ["FALLING", "FALLEN"] else (0, 255, 0), 2)
-    
+
     run_mode = (Config.SAFETY_RUN_MODE or "software_only").lower().strip()
     if run_mode == "software_only":
         cv2.putText(frame, "SAFETY: CAMERA/MIC", (180, 30), 0, 0.55, (0, 255, 200), 2)
@@ -137,7 +137,7 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts, 
         cv2.rectangle(ov, (0,0), (w, h), (0,0,255), -1)
         frame = cv2.addWeighted(ov, 0.3, frame, 0.7, 0)
         cv2.putText(frame, "FALL DETECTED", (w//2-150, h//2), 0, 1.2, (0, 0, 255), 3)
-    
+
     ard_col = (0, 200, 0) if global_state.arduino_connected else (0, 0, 255)
     cv2.putText(frame, f"ARD:{'ON' if global_state.arduino_connected else 'OFF'}", (w-100, 60), 0, 0.5, ard_col, 2)
     return frame
@@ -147,23 +147,21 @@ def main():
     logger.info("Initializing Medical-Grade AI Mobility Assistant")
     HardwareManager().start()
     start_io_services()
-    
+
     prev_time, fps = time.time(), 0
-    
+
     try:
         while True:
             time.sleep(0.01)
-            
-            # 1. Thread-safe snapshot of shared state
+
             frame = global_state.get_frame()
             sensors = global_state.get_sensor_data()
             current_mode = global_state.get_mode()
             current_alerts = global_state.get_alerts_enabled()
-            
-            # Prevent crashes if camera is still warming up
+
             if frame is None:
                 continue
-                
+
             h, w = frame.shape[:2]
 
             run_mode = (Config.SAFETY_RUN_MODE or "software_only").lower().strip()
@@ -179,13 +177,11 @@ def main():
                     break
                 continue
 
-            # 2. Physical SOS (serial) only when fused path trusts hardware
             if hardware_alerts:
                 sos_signal = sensors.get("sos", 0)
                 if sos_signal == 1:
                     trigger_sos("hardware")
 
-            # 3. IMU fall / tilt only with live hardware (software_only never uses IMU here)
             if hardware_alerts:
                 fall_alert = fall_engine.process(sensors)
                 if fall_alert:
@@ -200,7 +196,6 @@ def main():
 
             frame = render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts, hardware_alerts)
 
-            # 4. Vision & Modes
             if current_mode == "stick":
                 global_state.set_rehab_llm_context("mode=stick_obstacle_navigation")
                 global_state.set_gait_metrics(None)
@@ -212,7 +207,7 @@ def main():
                     cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
                     cv2.putText(frame, f"{trk['label']} {dist}", (x1, max(20, y1-5)), 0, 0.5, (255, 0, 0), 1)
                     if dist in ["very close", "close"]: nav_objs.append((x1, x2))
-                    
+
                     if dist == "very close" and time.time() - trk["last_alert"] > 3.0:
                         trk["last_alert"] = time.time()
                         global_state.queue_alert(f"{trk['label']} very close.")
@@ -230,14 +225,13 @@ def main():
                     elif right_obs > 0 and left_obs == 0: global_state.queue_alert("Move left.")
                     last_nav = time.time()
 
-            else:  # Walker Mode (Computer Vision Gait Analysis)
+            else:
                 if pose:
                     try:
                         res = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                        if res.pose_landmarks: 
+                        if res.pose_landmarks:
                             mp.solutions.drawing_utils.draw_landmarks(frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-                            
-                            # Pass visual landmarks to the new Gait Engine
+
                             lm = res.pose_landmarks.landmark
                             metrics = gait_engine.process_vision(lm)
                             global_state.set_gait_metrics(metrics)
@@ -297,7 +291,6 @@ def main():
                                 log_research_row(row)
                                 last_research_log_t = now
 
-                            # Gait + rehab HUD
                             cv2.putText(frame, f"State: {metrics['pattern']}", (10, h-40), 0, 0.6, (0, 255, 0), 2)
                             sym_col = (0, 255, 0) if sym > 85 else (0, 165, 255) if sym > 70 else (0, 0, 255)
                             cv2.putText(frame, f"Symmetry: {sym}%", (250, h-40), 0, 0.6, sym_col, 2)
@@ -343,7 +336,6 @@ def main():
                 else:
                     global_state.set_gait_metrics(None)
 
-            # FPS overlay
             curr = time.time()
             if curr - prev_time > 0.01: fps = 0.9*fps + 0.1*(1/(curr-prev_time))
             prev_time = curr

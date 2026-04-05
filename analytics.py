@@ -48,7 +48,7 @@ class FallDetector:
                     self.post_fall_still_count += 1
                     if self.post_fall_still_count >= Config.FALL_CONFIRM_FRAMES:
                         self.state = "FALLEN"
-                        self.post_fall_still_count = 0  
+                        self.post_fall_still_count = 0
                 else:
                     self.state = "UPRIGHT"
                     self.post_fall_still_count = 0
@@ -57,7 +57,7 @@ class FallDetector:
             if current_time - self.last_alert_time > Config.FALL_ALERT_INTERVAL:
                 alert = "Fall detected. Do you need assistance?"
                 self.last_alert_time = current_time
-            
+
             if (Config.FALL_RECOVERY_ACCEL_LO <= accel_mag <= Config.FALL_RECOVERY_ACCEL_HI) and \
                abs(pitch) < Config.FALL_RECOVERY_PITCH and abs(roll) < Config.FALL_RECOVERY_ROLL:
                 if self.recovery_start is None:
@@ -95,28 +95,24 @@ class GaitAnalyser:
         self.last_alert_time = 0.0
 
     def process_vision(self, landmarks) -> Dict:
-        """Uses MediaPipe Heel landmarks (29, 30) to detect steps via a virtual floor."""
         t = time.time()
         events = []
-        
+
         if not landmarks:
             return {"pattern": "Searching for User...", "symmetry": 0, "cadence": 0}
 
-        # MediaPipe Landmarks: 29=L_HEEL, 30=R_HEEL
         l_heel_y = landmarks[29].y
         r_heel_y = landmarks[30].y
 
-        # Detect Left Foot Strike based on Y-coordinate passing the virtual floor threshold
         if l_heel_y > Config.GAIT_VIRTUAL_FLOOR_Y and not self.l_loaded:
             self.l_loaded = True
             events.append("L_FOOT")
             if self.prev_l_t: self.l_strike_times.append(t - self.prev_l_t)
             self.prev_l_t = t
             self.step_times.append(t)
-        elif l_heel_y < (Config.GAIT_VIRTUAL_FLOOR_Y - 0.05): # Hysteresis to prevent double-counting
+        elif l_heel_y < (Config.GAIT_VIRTUAL_FLOOR_Y - 0.05):
             self.l_loaded = False
 
-        # Detect Right Foot Strike
         if r_heel_y > Config.GAIT_VIRTUAL_FLOOR_Y and not self.r_loaded:
             self.r_loaded = True
             events.append("R_FOOT")
@@ -126,7 +122,6 @@ class GaitAnalyser:
         elif r_heel_y < (Config.GAIT_VIRTUAL_FLOOR_Y - 0.05):
             self.r_loaded = False
 
-        # Calculate Symmetry & Cadence
         symmetry = 100
         if self.l_strike_times and self.r_strike_times:
             l_avg = sum(self.l_strike_times)/len(self.l_strike_times)
@@ -135,7 +130,7 @@ class GaitAnalyser:
                 symmetry = int((min(l_avg, r_avg) / max(l_avg, r_avg)) * 100)
 
         cadence = len([s for s in self.step_times if t - s < 10.0]) * 6
-        
+
         return {
             "events": events,
             "symmetry": symmetry,
@@ -147,7 +142,7 @@ class GaitAnalyser:
         t = time.time()
         if t - self.last_alert_time < Config.GAIT_ALERT_COOLDOWN: return None
         alert = None
-        
+
         sym = metrics.get("symmetry", 100)
         cad = metrics.get("cadence", 0)
 

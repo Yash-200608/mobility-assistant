@@ -1,13 +1,8 @@
-"""
-Acoustic cue for possible impact (loud transient on mic).
-Confirms nothing alone — combine with vision/IMU in clinic workflows.
-"""
 
 import time
 from typing import Optional
 
 from config import Config
-
 
 class AudioFallDetector:
     def __init__(self):

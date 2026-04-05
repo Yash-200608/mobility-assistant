@@ -1,4 +1,3 @@
-"""Session summaries for rehab progress (JSON sidecar to research CSV)."""
 
 import json
 import os
@@ -6,7 +5,6 @@ import time
 from typing import Any, Dict
 
 from config import Config
-
 
 def write_session_summary(summary: Dict[str, Any], label: str = "progress") -> str:
     os.makedirs(Config.RESEARCH_EXPORT_DIR, exist_ok=True)

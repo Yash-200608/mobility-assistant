@@ -1,4 +1,3 @@
-"""Append-only CSV research logging (Path A+B)."""
 
 import csv
 import os
@@ -14,12 +13,10 @@ _lock = threading.Lock()
 _csv_path: Optional[str] = None
 _fieldnames: List[str] = list(RESEARCH_CSV_FIELDS)
 
-
 def _ensure_dir() -> str:
     d = Config.RESEARCH_EXPORT_DIR
     os.makedirs(d, exist_ok=True)
     return d
-
 
 def _path_for_session() -> str:
     global _csv_path
@@ -29,7 +26,6 @@ def _path_for_session() -> str:
         _csv_path = os.path.join(Config.RESEARCH_EXPORT_DIR, f"session_{stamp}.csv")
         logger.info(f"Research CSV: {_csv_path}")
     return _csv_path
-
 
 def log_research_row(row: Dict[str, Any]) -> None:
     if not Config.RESEARCH_LOG_ENABLED:
@@ -43,9 +39,7 @@ def log_research_row(row: Dict[str, Any]) -> None:
                 w.writeheader()
             w.writerow({k: row.get(k, "") for k in _fieldnames})
 
-
 def reset_session_path() -> None:
-    """Start a new CSV file (e.g. next run)."""
     global _csv_path
     with _lock:
         _csv_path = None

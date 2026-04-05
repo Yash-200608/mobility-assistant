@@ -1,4 +1,3 @@
-"""Emergency SMS + spoken confirmation; shared by hardware button and voice."""
 
 import time
 
@@ -6,7 +5,6 @@ from twilio.rest import Client
 
 from config import Config
 from core import global_state, logger
-
 
 def _send_twilio_sms(sensors: dict, source: str) -> None:
     lat = sensors.get("gps_lat", 0.0)
@@ -25,12 +23,7 @@ def _send_twilio_sms(sensors: dict, source: str) -> None:
         to=Config.EMERGENCY_PHONE,
     )
 
-
 def trigger_sos(source: str = "hardware") -> bool:
-    """
-    Send emergency SMS (if Twilio works) and queue spoken confirmation.
-    Returns False if rate-limited by cooldown.
-    """
     if not global_state.try_acquire_sos_cooldown(Config.SOS_COOLDOWN_SEC):
         logger.info("SOS ignored: still within cooldown window.")
         global_state.queue_alert("S O S was sent recently. Wait before sending again.", force=True)
@@ -53,9 +46,7 @@ def trigger_sos(source: str = "hardware") -> bool:
         )
     return True
 
-
 def try_voice_sos_from_transcript(text_l: str) -> bool:
-    """If transcript matches voice SOS rules, trigger SOS and return True."""
     if not text_l:
         return False
     if Config.SOS_VOICE_REQUIRES_WAKE:

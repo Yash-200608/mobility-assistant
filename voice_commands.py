@@ -1,4 +1,3 @@
-"""Offline gait / mode voice commands; online LLM only for longer or explicitly detailed questions."""
 
 import random
 from typing import Optional
@@ -39,7 +38,6 @@ _DETAIL_CUES = (
     "article",
 )
 
-
 def _gait_status_message() -> str:
     m = global_state.get_gait_metrics()
     if not m:
@@ -52,7 +50,6 @@ def _gait_status_message() -> str:
         f"Cadence about {m.get('cadence', 0)} steps per minute."
     )
 
-
 def should_use_llm_for_remainder(remainder: str) -> bool:
     r = remainder.strip()
     if len(r) >= Config.LLM_VOICE_MIN_CHARS:
@@ -62,7 +59,6 @@ def should_use_llm_for_remainder(remainder: str) -> bool:
     if any(cue in r for cue in _DETAIL_CUES):
         return True
     return False
-
 
 def _try_offline_mode_and_gait(text_l: str) -> bool:
     if "walker mode" in text_l:
@@ -117,7 +113,6 @@ def _try_offline_mode_and_gait(text_l: str) -> bool:
         return True
     return False
 
-
 def _invoke_llm(remainder: str, groq_client: Groq) -> None:
     if not global_state.llm_cooldown_elapsed(Config.LLM_COOLDOWN_SEC):
         return
@@ -131,9 +126,7 @@ def _invoke_llm(remainder: str, groq_client: Groq) -> None:
             force=True,
         )
 
-
 def handle_wake_utterance(text: str, groq_client: Optional[Groq]) -> None:
-    """Process speech that already contains the wake word (lowercased transcript)."""
     text_l = text.lower().strip()
     wake = Config.WAKE_WORD.lower()
     remainder = text_l.replace(wake, " ")

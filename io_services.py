@@ -11,6 +11,9 @@ import groq
 from elevenlabs.client import ElevenLabs
 from config import Config
 from core import global_state, vision_circuit, logger
+from sos import try_voice_sos_from_transcript
+from stt_service import stt_configured, transcribe_microphone_chunk
+from voice_commands import handle_wake_utterance
 
 # --- AUDIO SERVICES ---
 groq_client = groq.Groq(api_key=Config.GROQ_API_KEY) if Config.GROQ_API_KEY else None
@@ -20,17 +23,6 @@ try:
     pygame.mixer.init(frequency=Config.PYGAME_FREQ, size=-16, channels=2, buffer=512)
 except Exception as e:
     logger.error(f"Pygame init failed: {e}")
-
-def pcm_to_wav(pcm: np.ndarray, samplerate: int) -> bytes:
-    import wave, io
-    pcm_int16 = (pcm * 32767).astype(np.int16)
-    byte_io = io.BytesIO()
-    with wave.open(byte_io, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(samplerate)
-        wf.writeframes(pcm_int16.tobytes())
-    return byte_io.getvalue()
 
 def speak_thread():
     if not el_client:
@@ -72,36 +64,33 @@ def speak_thread():
             logger.error(f"TTS Error: {e}")
 
 def audio_listener():
-    if not groq_client:
-        logger.warning("Voice listener disabled — missing API key.")
+    if not stt_configured(groq_client):
+        logger.warning(
+            "Voice listener disabled — add GROQ_API_KEY and/or install faster-whisper for local STT."
+        )
         return
-    samplerate, duration = 16000, 2.0
+    samplerate = Config.AUDIO_SAMPLE_RATE
+    duration = Config.AUDIO_CHUNK_SEC
     while not global_state.is_shutting_down:
         try:
             pcm = sd.rec(int(samplerate * duration), samplerate=samplerate, channels=1, dtype='float32')
             sd.wait()
-            if np.sqrt(np.mean(pcm**2)) < 0.001: continue
-            
-            completion = groq_client.audio.transcriptions.create(
-                file=("audio.wav", pcm_to_wav(pcm, samplerate)),
-                model="whisper-large-v3-turbo", language="en", temperature=0.0
-            )
-            text = completion.text.lower().strip()
-            
-            if Config.WAKE_WORD not in text: continue
-            
-            if "walker mode" in text:
-                global_state.set_mode("walker")
-                global_state.queue_alert("Switched to walker mode.", force=True)
-            elif "stick mode" in text:
-                global_state.set_mode("stick")
-                global_state.queue_alert("Switched to stick mode.", force=True)
-            elif "stop alerts" in text:
-                global_state.set_alerts_enabled(False)
-                global_state.queue_alert("Alerts paused.", force=True)
-            elif "resume alerts" in text:
-                global_state.set_alerts_enabled(True)
-                global_state.queue_alert("Alerts resumed.", force=True)
+            rms = float(np.sqrt(np.mean(np.square(pcm))))
+            global_state.set_last_mic_rms(rms)
+            if rms < 0.001:
+                continue
+
+            text = transcribe_microphone_chunk(pcm, samplerate, groq_client)
+            if not text:
+                continue
+            text_l = text.lower().strip()
+
+            if try_voice_sos_from_transcript(text_l):
+                continue
+            if Config.WAKE_WORD not in text_l:
+                continue
+
+            handle_wake_utterance(text_l, groq_client)
         except Exception as e:
             logger.error(f"Voice Listener Error: {e}")
             time.sleep(1)
@@ -142,6 +131,16 @@ def local_vision_thread():
         try:
             start_t = time.time()
             frame = global_state.get_frame()
+
+            mode = (Config.SAFETY_RUN_MODE or "software_only").lower().strip()
+            interval = Config.VISION_MIN_INTERVAL
+            if mode == "fused" and global_state.use_hardware_for_safety():
+                s = global_state.get_sensor_data()
+                us = s.get("us_front", 999.0)
+                if us != -1.0 and us < Config.US_FAR_CM:
+                    interval = Config.VISION_FAST_INTERVAL
+                else:
+                    interval = Config.VISION_SLOW_INTERVAL
             
             if frame is not None:
                 results = model.predict(frame, conf=Config.VISION_CONFIDENCE, verbose=False)
@@ -167,7 +166,7 @@ def local_vision_thread():
                 global_state.set_detections(all_preds)
                 
             elapsed = time.time() - start_t
-            time.sleep(max(0, Config.VISION_MIN_INTERVAL - elapsed))
+            time.sleep(max(0, interval - elapsed))
             
         except Exception as e:
             logger.error(f"Local Vision Error: {type(e).__name__}")

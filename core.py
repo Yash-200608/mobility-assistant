@@ -2,7 +2,7 @@ import time
 import queue
 import logging
 import threading
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from config import Config
 
 def setup_logger():
@@ -60,7 +60,8 @@ class SystemState:
         self.alerts_enabled: bool = True
         self.is_shutting_down: bool = False
         self.arduino_connected: bool = False
-        
+        self.last_sensor_update_mono: float = 0.0
+
         self.latest_sensor: Dict[str, float] = {
             "us_front": 999.0, "us_floor": 10.0, "fsr_left": 0.0, "fsr_right": 0.0,
             "ax": 0.0, "ay": 0.0, "az": 1.0, "gx": 0.0, "gy": 0.0, "gz": 0.0,
@@ -70,9 +71,80 @@ class SystemState:
         self.latest_frame = None
         self.latest_detections: list = []
         self.alert_queue = queue.Queue(maxsize=15)
+        self._llm_last_call_mono: float = 0.0
+        self._last_sos_mono: float = 0.0
+        self._last_gait_metrics: Optional[Dict[str, Any]] = None
+        self._rehab_llm_context: str = ""
+        self._last_mic_rms: float = 0.0
+
+    def set_last_mic_rms(self, rms: float):
+        with self._lock:
+            self._last_mic_rms = float(rms)
+
+    def get_last_mic_rms(self) -> float:
+        with self._lock:
+            return self._last_mic_rms
+
+    def set_rehab_llm_context(self, text: str):
+        with self._lock:
+            self._rehab_llm_context = (text or "")[:500]
+
+    def get_rehab_llm_context(self) -> str:
+        with self._lock:
+            return self._rehab_llm_context
+
+    def llm_cooldown_elapsed(self, cooldown_sec: float) -> bool:
+        with self._lock:
+            return (time.monotonic() - self._llm_last_call_mono) >= cooldown_sec
+
+    def mark_llm_called(self):
+        with self._lock:
+            self._llm_last_call_mono = time.monotonic()
+
+    def try_acquire_sos_cooldown(self, cooldown_sec: float) -> bool:
+        with self._lock:
+            now = time.monotonic()
+            if now - self._last_sos_mono < cooldown_sec:
+                return False
+            self._last_sos_mono = now
+            return True
+
+    def set_gait_metrics(self, metrics: Optional[Dict[str, Any]]):
+        """Latest walker-mode gait snapshot for offline voice (pattern, symmetry, cadence)."""
+        with self._lock:
+            if metrics is None:
+                self._last_gait_metrics = None
+            else:
+                self._last_gait_metrics = {
+                    "pattern": metrics.get("pattern", "—"),
+                    "symmetry": int(metrics.get("symmetry", 0)),
+                    "cadence": int(metrics.get("cadence", 0)),
+                    "events": list(metrics.get("events") or []),
+                }
+
+    def get_gait_metrics(self) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return dict(self._last_gait_metrics) if self._last_gait_metrics else None
 
     def update_sensor_data(self, valid_data: Dict[str, float]):
-        with self._lock: self.latest_sensor.update(valid_data)
+        with self._lock:
+            self.latest_sensor.update(valid_data)
+            self.last_sensor_update_mono = time.monotonic()
+
+    def sensors_fresh(self) -> bool:
+        """True when Arduino is connected and we have received telemetry recently."""
+        with self._lock:
+            if not self.arduino_connected:
+                return False
+            age = time.monotonic() - self.last_sensor_update_mono
+            return age <= Config.SENSOR_STALE_SEC and self.last_sensor_update_mono > 0.0
+
+    def use_hardware_for_safety(self) -> bool:
+        """Hardware may drive alerts only in fused mode with a live feed."""
+        mode = (Config.SAFETY_RUN_MODE or "software_only").lower().strip()
+        if mode != "fused":
+            return False
+        return self.sensors_fresh()
 
     def get_sensor_data(self) -> Dict[str, float]:
         with self._lock: return self.latest_sensor.copy()
@@ -120,3 +192,4 @@ class SystemState:
 
 global_state = SystemState()
 vision_circuit = CircuitBreaker()
+llm_circuit = CircuitBreaker(failure_threshold=4, recovery_timeout=45.0)

@@ -6,8 +6,23 @@ from config import Config
 from core import global_state, logger
 from hardware import HardwareManager
 from analytics import FallDetector, GaitAnalyser
+from analytics_enhanced import (
+    AdaptiveCoachingEngine,
+    EnergyExpenditure,
+    FallDirectionPredictor,
+    GaitFingerprint,
+    PhaseDetector,
+    PostureMonitor,
+    PreFallDetector,
+    RehabProgressTracker,
+    StrideLengthProxy,
+    build_rehab_frame,
+)
+from audio_fallcontext import AudioFallDetector
+from clinical_dashboard import write_session_summary
 from io_services import start_io_services
-from twilio.rest import Client
+from research_log import log_research_row
+from sos import trigger_sos
 
 try: mp_pose = mp.solutions.pose; pose = mp_pose.Pose(min_detection_confidence=0.6, min_tracking_confidence=0.6)
 except Exception: pose = None
@@ -68,33 +83,19 @@ def detect_dropoff(frame: np.ndarray) -> bool:
         logger.warning(f"Dropoff detection failed: {e}")
         return False
 
-def send_emergency_sos(sensors):
-    lat = sensors.get("gps_lat", 0.0)
-    lng = sensors.get("gps_lng", 0.0)
-    map_link = f"https://www.google.com/maps?q={lat},{lng}"
-    
-    try:
-        client = Client(Config.TWILIO_SID, Config.TWILIO_TOKEN)
-        msg_body = (
-            f"🚨 EMERGENCY: Yash has pressed the SOS button on his AI Mobility Assistant.\n"
-            f"Location: {map_link}\n"
-            f"Time: {time.strftime('%H:%M:%S')}"
-        )
-        message = client.messages.create(
-            body=msg_body,
-            from_=Config.TWILIO_PHONE,
-            to=Config.EMERGENCY_PHONE
-        )
-        logger.info(f"SOS SMS dispatched successfully: {message.sid}")
-    except Exception as e:
-        logger.error(f"Failed to send SOS: {e}")
-
 last_nav, last_stairs, last_us = 0.0, 0.0, 0.0
 tracker = ObjectTracker()
 fall_engine = FallDetector()
 gait_engine = GaitAnalyser()
+gait_fingerprint = GaitFingerprint()
+phase_detector = PhaseDetector()
+prefall_engine = PreFallDetector()
+rehab_tracker = RehabProgressTracker()
+audio_fall_detector = AudioFallDetector()
+last_slouch_alert_t = 0.0
+last_research_log_t = 0.0
 
-def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts):
+def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts, hardware_alerts: bool):
     global last_us, last_stairs
     t = time.time()
     h, w = frame.shape[:2]
@@ -104,23 +105,32 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts):
     cv2.putText(frame, f"ALERTS: {'ON' if current_alerts else 'OFF'}", (10, 60), 0, 0.6, alert_color, 2)
     cv2.putText(frame, f"POSTURE: {fall_state}", (10, 90), 0, 0.6, (0, 0, 255) if fall_state in ["FALLING", "FALLEN"] else (0, 255, 0), 2)
     
-    us_f = sensors.get("us_front", 999.0)
-    if us_f == -1.0:
-        cv2.putText(frame, "FRONT SENSOR FAULT", (180, 55), 0, 0.7, (0, 165, 255), 2)
-    elif us_f < Config.US_FRONT_STOP_CM:
-        cv2.putText(frame, "STOP! Obstacle", (180, 55), 0, 0.7, (0, 0, 255), 2)
-        if t - last_us > Config.ULTRASONIC_ALERT_INTERVAL:
-            global_state.queue_alert("Stop! Obstacle immediately ahead.", force=True)
-            last_us = t
-    elif us_f < Config.US_FRONT_WARN_CM:
-        cv2.putText(frame, f"Obstacle: {int(us_f)}cm", (180, 55), 0, 0.7, (0, 165, 255), 2)
+    run_mode = (Config.SAFETY_RUN_MODE or "software_only").lower().strip()
+    if run_mode == "software_only":
+        cv2.putText(frame, "SAFETY: CAMERA/MIC", (180, 30), 0, 0.55, (0, 255, 200), 2)
+    elif hardware_alerts:
+        cv2.putText(frame, "SAFETY: FUSED", (180, 30), 0, 0.55, (0, 255, 100), 2)
 
-    us_floor = sensors.get("us_floor", 10.0)
-    if us_floor != -1.0 and (us_floor > Config.US_FLOOR_DROPOFF_CM or detect_dropoff(frame)):
-        cv2.putText(frame, "DROP-OFF/STAIRS DETECTED", (180, 100), 0, 0.7, (0, 0, 255), 2)
-        if t - last_stairs > Config.STAIRS_ALERT_INTERVAL:
-            global_state.queue_alert("Caution. Drop off or stairs detected.")
-            last_stairs = t
+    if hardware_alerts:
+        us_f = sensors.get("us_front", 999.0)
+        if us_f == -1.0:
+            cv2.putText(frame, "FRONT SENSOR FAULT", (180, 55), 0, 0.7, (0, 165, 255), 2)
+        elif us_f < Config.US_FRONT_STOP_CM:
+            cv2.putText(frame, "STOP! Obstacle", (180, 55), 0, 0.7, (0, 0, 255), 2)
+            if t - last_us > Config.ULTRASONIC_ALERT_INTERVAL:
+                global_state.queue_alert("Stop! Obstacle immediately ahead.", force=True)
+                last_us = t
+        elif us_f < Config.US_FRONT_WARN_CM:
+            cv2.putText(frame, f"Obstacle: {int(us_f)}cm", (180, 55), 0, 0.7, (0, 165, 255), 2)
+
+        us_floor = sensors.get("us_floor", 10.0)
+        if us_floor != -1.0 and (us_floor > Config.US_FLOOR_DROPOFF_CM or detect_dropoff(frame)):
+            cv2.putText(frame, "DROP-OFF/STAIRS DETECTED", (180, 100), 0, 0.7, (0, 0, 255), 2)
+            if t - last_stairs > Config.STAIRS_ALERT_INTERVAL:
+                global_state.queue_alert("Caution. Drop off or stairs detected.")
+                last_stairs = t
+    elif run_mode == "fused" and not hardware_alerts:
+        cv2.putText(frame, "SENSOR FEED STALE — HW ALERTS OFF", (180, 55), 0, 0.55, (0, 165, 255), 2)
 
     if fall_state == "FALLEN":
         ov = frame.copy()
@@ -133,12 +143,12 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts):
     return frame
 
 def main():
+    global last_nav, last_slouch_alert_t, last_research_log_t
     logger.info("Initializing Medical-Grade AI Mobility Assistant")
     HardwareManager().start()
     start_io_services()
     
     prev_time, fps = time.time(), 0
-    global last_nav
     
     try:
         while True:
@@ -156,20 +166,44 @@ def main():
                 
             h, w = frame.shape[:2]
 
-            # 2. Check Physical SOS Button
-            sos_signal = sensors.get("sos", 0)
-            if sos_signal == 1:
-                global_state.queue_alert("S O S Activated. Notifying emergency contact.", force=True)
-                send_emergency_sos(sensors)
-                time.sleep(10) # 10 second cooldown to prevent duplicate text messages
+            run_mode = (Config.SAFETY_RUN_MODE or "software_only").lower().strip()
+            hardware_alerts = global_state.use_hardware_for_safety()
+            prefall_msg = None
 
-            # 3. Critical Safety Engine (Falls & Drops)
-            fall_alert = fall_engine.process(sensors)
-            if fall_alert: global_state.queue_alert(fall_alert, force=True)
-            frame = render_safety_hud(frame, sensors, fall_engine.state, current_mode, current_alerts)
+            if run_mode == "hardware_strict" and not global_state.sensors_fresh():
+                blank = np.zeros((h, w, 3), dtype=np.uint8)
+                cv2.putText(blank, "No live hardware feed", (max(10, w // 2 - 280), h // 2 - 20), 0, 0.7, (255, 255, 255), 2)
+                cv2.putText(blank, "Connect sensors or set SAFETY_RUN_MODE=software_only", (max(10, w // 2 - 420), h // 2 + 20), 0, 0.55, (200, 200, 200), 2)
+                cv2.imshow("AI Mobility Hub", blank)
+                if cv2.waitKey(1) == 27:
+                    break
+                continue
+
+            # 2. Physical SOS (serial) only when fused path trusts hardware
+            if hardware_alerts:
+                sos_signal = sensors.get("sos", 0)
+                if sos_signal == 1:
+                    trigger_sos("hardware")
+
+            # 3. IMU fall / tilt only with live hardware (software_only never uses IMU here)
+            if hardware_alerts:
+                fall_alert = fall_engine.process(sensors)
+                if fall_alert:
+                    global_state.queue_alert(fall_alert, force=True)
+                fall_state = fall_engine.state
+                prefall_msg = prefall_engine.process(sensors, fall_state)
+                if prefall_msg:
+                    global_state.queue_alert(prefall_msg, force=True)
+                    rehab_tracker.prefall_alerts += 1
+            else:
+                fall_state = "CAMERA/MIC"
+
+            frame = render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts, hardware_alerts)
 
             # 4. Vision & Modes
             if current_mode == "stick":
+                global_state.set_rehab_llm_context("mode=stick_obstacle_navigation")
+                global_state.set_gait_metrics(None)
                 dets = global_state.get_detections()
                 nav_objs = []
                 for trk in tracker.update(dets, w, h):
@@ -204,28 +238,110 @@ def main():
                             mp.solutions.drawing_utils.draw_landmarks(frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
                             
                             # Pass visual landmarks to the new Gait Engine
-                            metrics = gait_engine.process_vision(res.pose_landmarks.landmark)
+                            lm = res.pose_landmarks.landmark
+                            metrics = gait_engine.process_vision(lm)
+                            global_state.set_gait_metrics(metrics)
                             gait_alert = gait_engine.get_alert(metrics)
                             if gait_alert: global_state.queue_alert(gait_alert)
-                            
-                            # Gait HUD
-                            cv2.putText(frame, f"State: {metrics['pattern']}", (10, h-40), 0, 0.6, (0, 255, 0), 2)
-                            
+
                             sym = metrics["symmetry"]
+                            cad = metrics["cadence"]
+                            phase_detector.ingest_events(metrics.get("events") or [])
+                            gait_fingerprint.update(sym, cad)
+                            dev = gait_fingerprint.deviation_score()
+                            met = EnergyExpenditure.estimate_met(
+                                cad, metrics.get("pattern") == "Active Walking"
+                            )
+                            slouch = PostureMonitor.slouch_score(lm)
+                            stride_val = StrideLengthProxy.estimate(lm)
+                            phase_asym = phase_detector.asymmetry_ratio()
+                            coaching = AdaptiveCoachingEngine.context_line(dev, met, slouch, phase_asym)
+                            global_state.set_rehab_llm_context(coaching)
+
+                            now = time.time()
+                            ps = PostureMonitor.alert_if_bad(slouch)
+                            if ps and now - last_slouch_alert_t > 15.0:
+                                global_state.queue_alert(ps, force=True)
+                                last_slouch_alert_t = now
+                                rehab_tracker.slouch_alerts += 1
+
+                            if cad > 3:
+                                rehab_tracker.tick_walker(sym, cad, dev)
+
+                            direction_hint = ""
+                            if hardware_alerts and fall_state in ("FALLING", "FALLEN"):
+                                direction_hint = FallDirectionPredictor.predict(
+                                    float(sensors.get("pitch", 0.0)),
+                                    float(sensors.get("roll", 0.0)),
+                                )
+                            audio_hit = audio_fall_detector.check_loud_transient(
+                                global_state.get_last_mic_rms(), now
+                            )
+                            prefall_this_frame = prefall_msg if hardware_alerts else None
+
+                            if now - last_research_log_t >= Config.RESEARCH_LOG_INTERVAL_SEC:
+                                row = build_rehab_frame(
+                                    current_mode,
+                                    fall_state,
+                                    metrics,
+                                    sensors,
+                                    gait_fingerprint,
+                                    phase_detector,
+                                    stride_val,
+                                    slouch,
+                                    met,
+                                    prefall_this_frame is not None,
+                                    audio_hit,
+                                    direction_hint,
+                                )
+                                log_research_row(row)
+                                last_research_log_t = now
+
+                            # Gait + rehab HUD
+                            cv2.putText(frame, f"State: {metrics['pattern']}", (10, h-40), 0, 0.6, (0, 255, 0), 2)
                             sym_col = (0, 255, 0) if sym > 85 else (0, 165, 255) if sym > 70 else (0, 0, 255)
                             cv2.putText(frame, f"Symmetry: {sym}%", (250, h-40), 0, 0.6, sym_col, 2)
-                            
-                            cad = metrics["cadence"]
                             cad_col = (0, 255, 0) if cad > 60 else (0, 165, 255)
                             cv2.putText(frame, f"Cadence: {cad} spm", (10, h-70), 0, 0.6, cad_col, 2)
-                            
-                            # Draw Virtual Floor Line
+                            cv2.putText(
+                                frame,
+                                f"MET~{met:.1f}  GaitZ:{dev:.1f}  Slouch:{slouch}",
+                                (10, h - 100),
+                                0,
+                                0.5,
+                                (200, 220, 200),
+                                1,
+                            )
+                            cv2.putText(
+                                frame,
+                                f"Stride:{stride_val:.2f}  L/R asym:{phase_asym:.2f}",
+                                (10, h - 118),
+                                0,
+                                0.5,
+                                (180, 200, 180),
+                                1,
+                            )
+                            if direction_hint:
+                                cv2.putText(
+                                    frame,
+                                    f"Tilt hint: {direction_hint}",
+                                    (10, h - 136),
+                                    0,
+                                    0.5,
+                                    (100, 100, 255),
+                                    1,
+                                )
+
                             floor_y = int(h * Config.GAIT_VIRTUAL_FLOOR_Y)
                             cv2.line(frame, (0, floor_y), (w, floor_y), (255, 0, 255), 2)
                             cv2.putText(frame, "Virtual Floor", (10, floor_y - 10), 0, 0.5, (255, 0, 255), 1)
+                        else:
+                            global_state.set_gait_metrics(None)
 
                     except Exception as e:
                         logger.warning(f"Pose processing error: {e}")
+                else:
+                    global_state.set_gait_metrics(None)
 
             # FPS overlay
             curr = time.time()
@@ -240,7 +356,12 @@ def main():
     finally:
         logger.info("Executing safe teardown procedures...")
         global_state.is_shutting_down = True
-        time.sleep(0.5)  
+        try:
+            sp = write_session_summary(rehab_tracker.summary())
+            logger.info(f"Rehab session summary written: {sp}")
+        except Exception as e:
+            logger.warning(f"Session summary export failed: {e}")
+        time.sleep(0.5)
         cv2.destroyAllWindows()
         if pose: pose.close()
 

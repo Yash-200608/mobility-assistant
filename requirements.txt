@@ -1,0 +1,18 @@
+# AI Mobility Assistant — Python dependencies
+# Install: pip install -r requirements.txt
+
+opencv-python>=4.10.0
+numpy>=1.26
+mediapipe>=0.10
+python-dotenv>=1.0
+pyserial>=3.5
+sounddevice>=0.4
+pygame>=2.5
+groq>=0.4
+elevenlabs>=1.2
+twilio
+ultralytics
+requests>=2.31
+
+# Local speech-to-text (optional; STT_BACKEND=auto or local)
+faster-whisper

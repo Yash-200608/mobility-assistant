@@ -61,7 +61,7 @@ class Config:
     EMERGENCY_PHONE = "+919211059110"
     TWILIO_MESSAGING_SERVICE_SID = "MG0a7549211d71d0f09d2fd3e5d9fdcf4c"
 
-    CAMERA_URL = 0
+    CAMERA_URL = 1
 
     ARDUINO_BAUD: int = int(os.getenv("ARDUINO_BAUD", "57600"))
     LOG_LEVEL: int = logging.INFO
@@ -129,3 +129,8 @@ class Config:
     RESEARCH_EXPORT_DIR: str = os.getenv("RESEARCH_EXPORT_DIR", "exports")
     AUDIO_IMPACT_RMS: float = float(os.getenv("AUDIO_IMPACT_RMS", "0.08"))
     AUDIO_IMPACT_COOLDOWN: float = float(os.getenv("AUDIO_IMPACT_COOLDOWN", "4.0"))
+
+    # ── Bluetooth Audio ──────────────────────────────────────────
+    BLUETOOTH_DEVICE_NAME: str = os.getenv("BLUETOOTH_DEVICE_NAME", "")
+    BLUETOOTH_INPUT_DEVICE_INDEX: int = int(os.getenv("BLUETOOTH_INPUT_DEVICE_INDEX", "-1"))
+    BLUETOOTH_OUTPUT_DEVICE_INDEX: int = int(os.getenv("BLUETOOTH_OUTPUT_DEVICE_INDEX", "-1"))

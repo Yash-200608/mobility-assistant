@@ -18,11 +18,50 @@ from voice_commands import handle_wake_utterance
 groq_client = groq.Groq(api_key=Config.GROQ_API_KEY) if Config.GROQ_API_KEY else None
 el_client = ElevenLabs(api_key=Config.ELEVENLABS_API_KEY) if Config.ELEVENLABS_API_KEY else None
 
+# ── Bluetooth device resolution ──────────────────────────────────────────────
+def find_bluetooth_device(name_hint: str):
+    devices = sd.query_devices()
+    in_idx = out_idx = None
+    for i, d in enumerate(devices):
+        if name_hint.lower() in d['name'].lower():
+            if d['max_input_channels'] > 0 and in_idx is None:
+                in_idx = i
+            if d['max_output_channels'] > 0 and out_idx is None:
+                out_idx = i
+    return in_idx, out_idx
+
+def get_audio_devices():
+    name = Config.BLUETOOTH_DEVICE_NAME.strip()
+    in_idx = Config.BLUETOOTH_INPUT_DEVICE_INDEX
+    out_idx = Config.BLUETOOTH_OUTPUT_DEVICE_INDEX
+    if name:
+        found_in, found_out = find_bluetooth_device(name)
+        if found_in is not None: in_idx = found_in
+        if found_out is not None: out_idx = found_out
+    return (None if in_idx == -1 else in_idx,
+            None if out_idx == -1 else out_idx)
+
+_bt_in_idx, _bt_out_idx = get_audio_devices()
+
+if _bt_in_idx is not None:
+    sd.default.device[0] = _bt_in_idx
+    logger.info(f"Bluetooth mic input  → device index {_bt_in_idx}: {sd.query_devices()[_bt_in_idx]['name']}")
+else:
+    logger.info("Bluetooth mic: not configured, using system default input.")
+
+if _bt_out_idx is not None:
+    sd.default.device[1] = _bt_out_idx
+    logger.info(f"Bluetooth audio output → device index {_bt_out_idx}: {sd.query_devices()[_bt_out_idx]['name']}")
+else:
+    logger.info("Bluetooth output: not configured, using system default output.")
+
+# ── Pygame init ───────────────────────────────────────────────────────────────
 try:
     pygame.mixer.init(frequency=Config.PYGAME_FREQ, size=-16, channels=2, buffer=512)
 except Exception as e:
     logger.error(f"Pygame init failed: {e}")
 
+# ── Threads ───────────────────────────────────────────────────────────────────
 def speak_thread():
     if not el_client:
         logger.warning("TTS thread disabled — missing API key.")
@@ -68,28 +107,46 @@ def audio_listener():
             "Voice listener disabled — add GROQ_API_KEY and/or install faster-whisper for local STT."
         )
         return
+
+    logger.info(f"Voice listener started. Mic device index: {_bt_in_idx}")
     samplerate = Config.AUDIO_SAMPLE_RATE
     duration = Config.AUDIO_CHUNK_SEC
+
     while not global_state.is_shutting_down:
         try:
-            pcm = sd.rec(int(samplerate * duration), samplerate=samplerate, channels=1, dtype='float32')
+            pcm = sd.rec(
+                int(samplerate * duration),
+                samplerate=samplerate,
+                channels=1,
+                dtype='float32',
+                device=_bt_in_idx
+            )
             sd.wait()
             rms = float(np.sqrt(np.mean(np.square(pcm))))
             global_state.set_last_mic_rms(rms)
+
+            logger.info(f"[MIC] RMS={rms:.4f} device={_bt_in_idx}")
+
             if rms < 0.001:
                 continue
 
             text = transcribe_microphone_chunk(pcm, samplerate, groq_client)
+            logger.info(f"[STT] heard: '{text}'")
+
             if not text:
                 continue
             text_l = text.lower().strip()
+            logger.info(f"[STT] transcript: '{text_l}'")
 
             if try_voice_sos_from_transcript(text_l):
                 continue
             if Config.WAKE_WORD not in text_l:
+                logger.info(f"[STT] wake word '{Config.WAKE_WORD}' not found, ignoring.")
                 continue
 
+            logger.info(f"[STT] wake word detected, routing command.")
             handle_wake_utterance(text_l, groq_client)
+
         except Exception as e:
             logger.error(f"Voice Listener Error: {e}")
             time.sleep(1)
@@ -118,7 +175,6 @@ def local_vision_thread():
         from ultralytics import YOLO
         import logging
         logging.getLogger("ultralytics").setLevel(logging.WARNING)
-
         model = YOLO(Config.LOCAL_MODEL_WEIGHTS)
         logger.info("Local Edge AI Online.")
     except Exception as e:
@@ -149,7 +205,6 @@ def local_vision_thread():
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
                         cls_id = int(box.cls[0].item())
                         label = model.names[cls_id]
-
                         all_preds.append({
                             "class": label,
                             "x": (x1 + x2) / 2,

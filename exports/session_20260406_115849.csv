@@ -1,0 +1,3 @@
+t,mode,fall_state,symmetry,cadence,gait_deviation_z,met_proxy,slouch_score,phase_asym,stride_proxy,pitch,roll,accel_mag,prefall_alert,audio_impact_hint,fall_direction_hint
+1775456929.9282093,walker,CAMERA/MIC,100,12,0.0,2.16,0,0.0,0.973,0.0,0.0,1.0,0,0,
+1775456930.433013,walker,CAMERA/MIC,100,12,0.0,2.16,0,0.0,0.422,0.0,0.0,1.0,0,0,

@@ -54,7 +54,7 @@ class CircuitBreaker:
 class SystemState:
     def __init__(self):
         self._lock = threading.RLock()
-        self.mode: str = "stick"
+        self.mode: str = "walker"
         self.alerts_enabled: bool = True
         self.is_shutting_down: bool = False
         self.arduino_connected: bool = False

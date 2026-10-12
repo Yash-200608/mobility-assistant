@@ -5,70 +5,16 @@ import mediapipe as mp
 from config import Config
 from core import global_state, logger
 from hardware import HardwareManager
-from analytics import FallDetector, GaitAnalyser
-from analytics_enhanced import (
-    AdaptiveCoachingEngine,
-    EnergyExpenditure,
-    FallDirectionPredictor,
-    GaitFingerprint,
-    PhaseDetector,
-    PostureMonitor,
-    PreFallDetector,
-    RehabProgressTracker,
-    StrideLengthProxy,
-    build_rehab_frame,
-)
-from audio_fallcontext import AudioFallDetector
+from analytics_enhanced import RehabProgressTracker
 from clinical_dashboard import write_session_summary
+from escalation import fall_escalator
 from io_services import start_io_services
+from navigation import NavigationAdvisor, ObjectTracker, estimate_dist  # noqa: F401  (re-exported)
+from pipeline import HardwareSafety, WalkerAnalytics
 from research_log import log_research_row
-from sos import trigger_sos
 
 try: mp_pose = mp.solutions.pose; pose = mp_pose.Pose(min_detection_confidence=0.6, min_tracking_confidence=0.6)
 except Exception: pose = None
-
-class ObjectTracker:
-    def __init__(self):
-        self.tracks, self.next_id = {}, 0
-    def update(self, detections, w, h):
-        now = time.time()
-        for tid in [tid for tid, t in self.tracks.items() if now - t["last_seen"] > Config.TRACKED_TTL]:
-            del self.tracks[tid]
-
-        updated = []
-        unmatched = list(detections)
-        for tid, track in list(self.tracks.items()):
-            best_i, best_iou = -1, 0.0
-            for i, det in enumerate(unmatched):
-                if det["class"] != track["label"]: continue
-                box1 = (track["x1"], track["y1"], track["x2"], track["y2"])
-                box2 = (det["x"]-det["width"]/2, det["y"]-det["height"]/2, det["x"]+det["width"]/2, det["y"]+det["height"]/2)
-                x1, y1 = max(box1[0], box2[0]), max(box1[1], box2[1])
-                x2, y2 = min(box1[2], box2[2]), min(box1[3], box2[3])
-                inter = max(0, x2-x1) * max(0, y2-y1)
-                union = (box1[2]-box1[0])*(box1[3]-box1[1]) + (box2[2]-box2[0])*(box2[3]-box2[1]) - inter
-                iou = inter / union if union > 0 else 0
-                if iou > best_iou: best_i, best_iou = i, iou
-
-            if best_iou > Config.IOU_MATCH_THRESH:
-                m = unmatched.pop(best_i)
-                track.update({"x1": m["x"]-m["width"]/2, "y1": m["y"]-m["height"]/2, "x2": m["x"]+m["width"]/2, "y2": m["y"]+m["height"]/2, "last_seen": now})
-                updated.append(track)
-
-        for m in unmatched:
-            new_t = {"label": m["class"], "x1": m["x"]-m["width"]/2, "y1": m["y"]-m["height"]/2, "x2": m["x"]+m["width"]/2, "y2": m["y"]+m["height"]/2, "last_seen": now, "last_alert": 0, "id": self.next_id}
-            self.tracks[self.next_id] = new_t
-            updated.append(new_t)
-            self.next_id += 1
-        return updated
-
-def estimate_dist(x1, y1, x2, y2, w, h):
-    if w <= 0 or h <= 0: return "far"
-    area = max(0, (x2 - x1)) * max(0, (y2 - y1))
-    ratio = area / (w * h)
-    for t, l in Config.DIST_THRESHOLDS:
-        if ratio >= t: return l
-    return "far"
 
 def detect_dropoff(frame: np.ndarray) -> bool:
     try:
@@ -83,17 +29,7 @@ def detect_dropoff(frame: np.ndarray) -> bool:
         logger.warning(f"Dropoff detection failed: {e}")
         return False
 
-last_nav, last_stairs, last_us = 0.0, 0.0, 0.0
-tracker = ObjectTracker()
-fall_engine = FallDetector()
-gait_engine = GaitAnalyser()
-gait_fingerprint = GaitFingerprint()
-phase_detector = PhaseDetector()
-prefall_engine = PreFallDetector()
-rehab_tracker = RehabProgressTracker()
-audio_fall_detector = AudioFallDetector()
-last_slouch_alert_t = 0.0
-last_research_log_t = 0.0
+last_us, last_stairs = 0.0, 0.0
 
 def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts, hardware_alerts: bool):
     global last_us, last_stairs
@@ -137,16 +73,40 @@ def render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts, 
         cv2.rectangle(ov, (0,0), (w, h), (0,0,255), -1)
         frame = cv2.addWeighted(ov, 0.3, frame, 0.7, 0)
         cv2.putText(frame, "FALL DETECTED", (w//2-150, h//2), 0, 1.2, (0, 0, 255), 3)
+        if fall_escalator.pending:
+            cv2.putText(frame, "Say 'I'm okay' to cancel SOS", (w//2-200, h//2+40), 0, 0.7, (255, 255, 255), 2)
 
     ard_col = (0, 200, 0) if global_state.arduino_connected else (0, 0, 255)
     cv2.putText(frame, f"ARD:{'ON' if global_state.arduino_connected else 'OFF'}", (w-100, 60), 0, 0.5, ard_col, 2)
     return frame
 
+def draw_walker_hud(frame, wf, floor_ratio):
+    h, w = frame.shape[:2]
+    sym_col = (0, 255, 0) if wf.symmetry > 85 else (0, 165, 255) if wf.symmetry > 70 else (0, 0, 255)
+    cad_col = (0, 255, 0) if wf.cadence > 60 else (0, 165, 255)
+    cv2.putText(frame, f"State: {wf.metrics['pattern']}", (10, h-40), 0, 0.6, (0, 255, 0), 2)
+    cv2.putText(frame, f"Symmetry: {wf.symmetry}%", (250, h-40), 0, 0.6, sym_col, 2)
+    cv2.putText(frame, f"Cadence: {wf.cadence} spm", (10, h-70), 0, 0.6, cad_col, 2)
+    cv2.putText(frame, f"MET~{wf.met:.1f}  GaitZ:{wf.deviation:.1f}  Slouch:{wf.slouch}",
+                (10, h - 100), 0, 0.5, (200, 220, 200), 1)
+    cv2.putText(frame, f"Stride:{wf.stride:.2f}  L/R asym:{wf.phase_asym:.2f}",
+                (10, h - 118), 0, 0.5, (180, 200, 180), 1)
+    if wf.direction_hint:
+        cv2.putText(frame, f"Tilt hint: {wf.direction_hint}", (10, h - 136), 0, 0.5, (100, 100, 255), 1)
+    floor_y = int(h * floor_ratio)
+    cv2.line(frame, (0, floor_y), (w, floor_y), (255, 0, 255), 2)
+    cv2.putText(frame, "Virtual Floor", (10, floor_y - 10), 0, 0.5, (255, 0, 255), 1)
+
 def main():
-    global last_nav, last_slouch_alert_t, last_research_log_t
-    logger.info("Initializing Medical-Grade AI Mobility Assistant")
-    HardwareManager().start()
+    logger.info("Initializing AI Mobility Assistant (research prototype, not a medical device)")
+    hw = HardwareManager()
+    hw.start()
     start_io_services()
+
+    rehab_tracker = RehabProgressTracker()
+    safety = HardwareSafety(buzz_fn=hw.buzz)
+    walker = WalkerAnalytics(rehab=rehab_tracker, log_fn=log_research_row)
+    navigator = NavigationAdvisor()
 
     prev_time, fps = time.time(), 0
 
@@ -163,12 +123,14 @@ def main():
                 continue
 
             h, w = frame.shape[:2]
+            now = time.time()
 
             run_mode = (Config.SAFETY_RUN_MODE or "software_only").lower().strip()
             hardware_alerts = global_state.use_hardware_for_safety()
-            prefall_msg = None
+            prefall_fired = False
 
             if run_mode == "hardware_strict" and not global_state.sensors_fresh():
+                safety.idle_tick(now)
                 blank = np.zeros((h, w, 3), dtype=np.uint8)
                 cv2.putText(blank, "No live hardware feed", (max(10, w // 2 - 280), h // 2 - 20), 0, 0.7, (255, 255, 255), 2)
                 cv2.putText(blank, "Connect sensors or set SAFETY_RUN_MODE=software_only", (max(10, w // 2 - 420), h // 2 + 20), 0, 0.55, (200, 200, 200), 2)
@@ -178,20 +140,13 @@ def main():
                 continue
 
             if hardware_alerts:
-                sos_signal = sensors.get("sos", 0)
-                if sos_signal == 1:
-                    trigger_sos("hardware")
-
-            if hardware_alerts:
-                fall_alert = fall_engine.process(sensors)
-                if fall_alert:
-                    global_state.queue_alert(fall_alert, force=True)
-                fall_state = fall_engine.state
-                prefall_msg = prefall_engine.process(sensors, fall_state)
-                if prefall_msg:
-                    global_state.queue_alert(prefall_msg, force=True)
+                result = safety.step(sensors, now)
+                fall_state = result.fall_state
+                prefall_fired = result.prefall_alert is not None
+                if prefall_fired:
                     rehab_tracker.prefall_alerts += 1
             else:
+                safety.idle_tick(now)
                 fall_state = "CAMERA/MIC"
 
             frame = render_safety_hud(frame, sensors, fall_state, current_mode, current_alerts, hardware_alerts)
@@ -199,138 +154,23 @@ def main():
             if current_mode == "stick":
                 global_state.set_rehab_llm_context("mode=stick_obstacle_navigation")
                 global_state.set_gait_metrics(None)
-                dets = global_state.get_detections()
-                nav_objs = []
-                for trk in tracker.update(dets, w, h):
-                    x1, y1, x2, y2 = int(trk["x1"]), int(trk["y1"]), int(trk["x2"]), int(trk["y2"])
-                    dist = estimate_dist(x1, y1, x2, y2, w, h)
-                    cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
-                    cv2.putText(frame, f"{trk['label']} {dist}", (x1, max(20, y1-5)), 0, 0.5, (255, 0, 0), 1)
-                    if dist in ["very close", "close"]: nav_objs.append((x1, x2))
-
-                    if dist == "very close" and time.time() - trk["last_alert"] > 3.0:
-                        trk["last_alert"] = time.time()
-                        global_state.queue_alert(f"{trk['label']} very close.")
-
-                if time.time() - last_nav > Config.NAV_ALERT_INTERVAL and nav_objs:
-                    centers = [(a+b)/2 for a,b in nav_objs]
-                    left_obs = sum(1 for c in centers if c < w * 0.4)
-                    right_obs = sum(1 for c in centers if c > w * 0.6)
-                    mid_obs = sum(1 for c in centers if w*0.4 <= c <= w*0.6)
-                    if mid_obs > 0:
-                        if left_obs > right_obs: global_state.queue_alert("Move slightly right.")
-                        elif right_obs > left_obs: global_state.queue_alert("Move slightly left.")
-                        else: global_state.queue_alert("Stop. Obstacle ahead.")
-                    elif left_obs > 0 and right_obs == 0: global_state.queue_alert("Move right.")
-                    elif right_obs > 0 and left_obs == 0: global_state.queue_alert("Move left.")
-                    last_nav = time.time()
-
+                for box in navigator.step(global_state.get_detections(), w, h, now):
+                    cv2.rectangle(frame, (box["x1"], box["y1"]), (box["x2"], box["y2"]), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{box['label']} {box['dist']}", (box["x1"], max(20, box["y1"] - 5)),
+                                0, 0.5, (255, 0, 0), 1)
             else:
                 if pose:
                     try:
                         res = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                         if res.pose_landmarks:
                             mp.solutions.drawing_utils.draw_landmarks(frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-
-                            lm = res.pose_landmarks.landmark
-                            metrics = gait_engine.process_vision(lm)
-                            global_state.set_gait_metrics(metrics)
-                            gait_alert = gait_engine.get_alert(metrics)
-                            if gait_alert: global_state.queue_alert(gait_alert)
-
-                            sym = metrics["symmetry"]
-                            cad = metrics["cadence"]
-                            phase_detector.ingest_events(metrics.get("events") or [])
-                            gait_fingerprint.update(sym, cad)
-                            dev = gait_fingerprint.deviation_score()
-                            met = EnergyExpenditure.estimate_met(
-                                cad, metrics.get("pattern") == "Active Walking"
+                            wf = walker.step(
+                                res.pose_landmarks.landmark, current_mode, fall_state, sensors,
+                                hardware_alerts, prefall_fired=prefall_fired, now=now,
                             )
-                            slouch = PostureMonitor.slouch_score(lm)
-                            stride_val = StrideLengthProxy.estimate(lm)
-                            phase_asym = phase_detector.asymmetry_ratio()
-                            coaching = AdaptiveCoachingEngine.context_line(dev, met, slouch, phase_asym)
-                            global_state.set_rehab_llm_context(coaching)
-
-                            now = time.time()
-                            ps = PostureMonitor.alert_if_bad(slouch)
-                            if ps and now - last_slouch_alert_t > 15.0:
-                                global_state.queue_alert(ps, force=True)
-                                last_slouch_alert_t = now
-                                rehab_tracker.slouch_alerts += 1
-
-                            if cad > 3:
-                                rehab_tracker.tick_walker(sym, cad, dev)
-
-                            direction_hint = ""
-                            if hardware_alerts and fall_state in ("FALLING", "FALLEN"):
-                                direction_hint = FallDirectionPredictor.predict(
-                                    float(sensors.get("pitch", 0.0)),
-                                    float(sensors.get("roll", 0.0)),
-                                )
-                            audio_hit = audio_fall_detector.check_loud_transient(
-                                global_state.get_last_mic_rms(), now
-                            )
-                            prefall_this_frame = prefall_msg if hardware_alerts else None
-
-                            if now - last_research_log_t >= Config.RESEARCH_LOG_INTERVAL_SEC:
-                                row = build_rehab_frame(
-                                    current_mode,
-                                    fall_state,
-                                    metrics,
-                                    sensors,
-                                    gait_fingerprint,
-                                    phase_detector,
-                                    stride_val,
-                                    slouch,
-                                    met,
-                                    prefall_this_frame is not None,
-                                    audio_hit,
-                                    direction_hint,
-                                )
-                                log_research_row(row)
-                                last_research_log_t = now
-
-                            cv2.putText(frame, f"State: {metrics['pattern']}", (10, h-40), 0, 0.6, (0, 255, 0), 2)
-                            sym_col = (0, 255, 0) if sym > 85 else (0, 165, 255) if sym > 70 else (0, 0, 255)
-                            cv2.putText(frame, f"Symmetry: {sym}%", (250, h-40), 0, 0.6, sym_col, 2)
-                            cad_col = (0, 255, 0) if cad > 60 else (0, 165, 255)
-                            cv2.putText(frame, f"Cadence: {cad} spm", (10, h-70), 0, 0.6, cad_col, 2)
-                            cv2.putText(
-                                frame,
-                                f"MET~{met:.1f}  GaitZ:{dev:.1f}  Slouch:{slouch}",
-                                (10, h - 100),
-                                0,
-                                0.5,
-                                (200, 220, 200),
-                                1,
-                            )
-                            cv2.putText(
-                                frame,
-                                f"Stride:{stride_val:.2f}  L/R asym:{phase_asym:.2f}",
-                                (10, h - 118),
-                                0,
-                                0.5,
-                                (180, 200, 180),
-                                1,
-                            )
-                            if direction_hint:
-                                cv2.putText(
-                                    frame,
-                                    f"Tilt hint: {direction_hint}",
-                                    (10, h - 136),
-                                    0,
-                                    0.5,
-                                    (100, 100, 255),
-                                    1,
-                                )
-
-                            floor_y = int(h * Config.GAIT_VIRTUAL_FLOOR_Y)
-                            cv2.line(frame, (0, floor_y), (w, floor_y), (255, 0, 255), 2)
-                            cv2.putText(frame, "Virtual Floor", (10, floor_y - 10), 0, 0.5, (255, 0, 255), 1)
+                            draw_walker_hud(frame, wf, Config.GAIT_VIRTUAL_FLOOR_Y)
                         else:
                             global_state.set_gait_metrics(None)
-
                     except Exception as e:
                         logger.warning(f"Pose processing error: {e}")
                 else:

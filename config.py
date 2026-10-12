@@ -55,15 +55,39 @@ class Config:
         "call emergency services",
     )
 
-    TWILIO_SID = "AC01a1d0308732c7680d646d6934f7195f"
-    TWILIO_TOKEN = "430c9720bb0c635d5409c656b10ced0b"
-    TWILIO_PHONE = "+16623988325"
-    EMERGENCY_PHONE = "+919211059110"
-    TWILIO_MESSAGING_SERVICE_SID = "MG0a7549211d71d0f09d2fd3e5d9fdcf4c"
+    # After a failed send, allow another attempt after this many seconds
+    # (instead of locking the user out for the full SOS_COOLDOWN_SEC).
+    SOS_RETRY_SEC: float = float(os.getenv("SOS_RETRY_SEC", "10"))
+
+    SOS_SEND_ATTEMPTS: int = int(os.getenv("SOS_SEND_ATTEMPTS", "3"))
+    SOS_ATTEMPT_BACKOFF_SEC: float = float(os.getenv("SOS_ATTEMPT_BACKOFF_SEC", "2"))
+
+    # Automatic SOS after a confirmed fall. OFF by default: the false-alarm rate is
+    # unmeasured, and a false positive would text the emergency contact.
+    FALL_AUTO_SOS: bool = os.getenv("FALL_AUTO_SOS", "false").lower() in ("1", "true", "yes", "on")
+    FALL_ESCALATION_SEC: float = float(os.getenv("FALL_ESCALATION_SEC", "20"))
+    ESCALATION_CANCEL_PHRASES: Tuple[str, ...] = (
+        "i'm okay", "im okay", "i am okay", "i'm ok", "im ok", "i am ok",
+        "i'm fine", "im fine", "i am fine", "i'm alright", "im alright",
+        "false alarm", "cancel",
+    )
+
+    # Credentials and contact numbers come from the environment (.env), never source.
+    TWILIO_SID: str | None = os.getenv("TWILIO_SID")
+    TWILIO_TOKEN: str | None = os.getenv("TWILIO_TOKEN")
+    TWILIO_PHONE: str | None = os.getenv("TWILIO_PHONE")
+    EMERGENCY_PHONE: str | None = os.getenv("EMERGENCY_PHONE")
+
+    @staticmethod
+    def twilio_configured() -> bool:
+        return all((Config.TWILIO_SID, Config.TWILIO_TOKEN, Config.TWILIO_PHONE, Config.EMERGENCY_PHONE))
 
     CAMERA_URL = 1
 
     ARDUINO_BAUD: int = int(os.getenv("ARDUINO_BAUD", "57600"))
+    # Set to a file path to append every raw serial JSON line with a timestamp (JSONL),
+    # for offline replay with tools/replay_trace.py.
+    SENSOR_RECORD_PATH: str = os.getenv("SENSOR_RECORD_PATH", "")
     LOG_LEVEL: int = logging.INFO
 
     SAFETY_RUN_MODE: str = os.getenv("SAFETY_RUN_MODE", "software_only")
@@ -80,6 +104,7 @@ class Config:
 
     GAIT_VIRTUAL_FLOOR_Y: float = 0.85
 
+    LATENCY_LOG_ENABLED: bool = os.getenv("LATENCY_LOG_ENABLED", "true").lower() in ("1", "true", "yes", "on")
     ELEVENLABS_VOICE_ID: str = "21m00Tcm4TlvDq8ikWAM"
     ELEVENLABS_MODEL: str = "eleven_turbo_v2"
     WAKE_WORD: str = "assistant"
@@ -103,6 +128,7 @@ class Config:
     TILT_WARN_PITCH: int = 35
     TILT_WARN_ROLL: int = 25
     FALL_CONFIRM_FRAMES: int = 3
+    FALL_SETTLE_SEC: float = 0.3  # ignore impact ringing before judging stillness
     FALL_STILL_THRESH: float = 1.3
     FALL_RECOVERY_ACCEL_LO: float = 0.8
     FALL_RECOVERY_ACCEL_HI: float = 1.2

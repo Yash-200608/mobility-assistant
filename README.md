@@ -12,7 +12,8 @@ A real-time rehabilitation and mobility assistance platform that combines comput
 *   **IMU + computer vision sensor fusion** for robust fall and pre-fall detection.
 *   **Multi-threaded architecture** coordinating vision, audio, and hardware services.
 *   **Adaptive voice coaching** using local speech recognition and context-aware LLM assistance.
-*   **Edge-first deployment** ensuring safety-critical operations function entirely offline.
+*   **Automatic fall escalation** with a voice cancel window (opt-in), background SOS delivery with retries, and an offline spoken-alert fallback.
+*   **Edge-first design:** pose, gait, fall-state and obstacle logic run locally. Spoken alerts (ElevenLabs) and SOS SMS (Twilio) need internet; offline, alerts appear on the HUD only.
 
 ---
 
@@ -113,7 +114,7 @@ graph TD
 
 # Performance Characteristics
 
-*Observed on i7-12th Gen / 16GB RAM.*
+*Informal observations on an i7-12th Gen / 16GB RAM development machine. Not a benchmark: no controlled protocol, sample size or variance was recorded. See [docs/EVALUATION.md](docs/EVALUATION.md) for the protocol that will replace these.*
 
 | Metric | Observed Value | Implementation Detail |
 | :--- | :--- | :--- |
@@ -127,8 +128,8 @@ graph TD
 # Lessons Learned
 
 *   **Reliability > Accuracy:** In safety-critical systems, a stable signal is more valuable than a high-fidelity one with high latency.
-*   **Temporal Context:** Reliable fall detection requires a window of time, not just a snapshot. Moving to state-based detection significantly reduced false-positive rates.
-*   **Sensor Synergy:** Fusion provides significantly more robust safety signals than any individual modality.
+*   **Temporal Context:** Fall detection needs a window of time, not just a snapshot, which is why it is a state machine. The false-positive improvement from this has not been measured yet.
+*   **Sensor Synergy:** Fusing IMU and vision is the design goal; its benefit over a single modality has not been quantified yet.
 *   **Graceful Degradation:** Designing fallback behavior (e.g., "Software-Only" mode) is as critical as the primary workflow.
 
 ---
@@ -137,7 +138,9 @@ graph TD
 
 *   **Lighting Sensitivity:** Pose estimation quality decreases in low-light environments.
 *   **Ultrasonic Echoes:** Sensors may return false distances on angled surfaces.
-*   **Clinical Validation:** Heuristics are research-oriented and not clinically validated.
+*   **Clinical Validation:** Heuristics are research-oriented and not clinically validated. This is a prototype, not a medical device.
+*   **No measured accuracy yet:** recall, precision, false alarms per hour and alert latency have not been evaluated. The protocol is in [docs/EVALUATION.md](docs/EVALUATION.md).
+*   **Cloud dependencies:** spoken alerts need ElevenLabs and the SOS SMS needs Twilio; there is no on-device TTS or SMS fallback.
 
 ---
 
@@ -149,4 +152,64 @@ graph TD
     pip install -r requirements.txt
     python main.py
     ```
-3.  **Config:** Thresholds are configurable in `config.py`.
+3.  **Config:** Thresholds are configurable in `config.py`. Copy `.env.example` to `.env` and fill in API keys. SOS SMS needs the `TWILIO_*` and `EMERGENCY_PHONE` values; without them SOS reports that it could not send.
+
+---
+
+# Try it without hardware
+
+```bash
+python tools/demo_sim.py --list
+python tools/demo_sim.py fall_unanswered      # fall -> buzzer -> automatic SOS (simulated, nothing sent)
+python tools/demo_sim.py fall_cancelled       # user says "I'm okay": SOS cancelled
+```
+
+The simulator runs the real safety pipeline on synthetic IMU traces. It shows behaviour; it is not evidence of detection accuracy.
+
+# Safety features
+
+| Feature | Behaviour | Config |
+| :--- | :--- | :--- |
+| Fall state machine | UPRIGHT, TILT_WARNING, FALLING, FALLEN, RECOVERING from IMU accel and tilt | `FALL_*`, `TILT_*` |
+| Automatic SOS after a fall | Cancel window, then SMS. **Off by default** until the false-alarm rate is measured | `FALL_AUTO_SOS`, `FALL_ESCALATION_SEC` |
+| SOS delivery | Background thread with retries; the user is told the truth if it fails | `SOS_SEND_ATTEMPTS`, `SOS_RETRY_SEC` |
+| Spoken alerts | ElevenLabs when online, on-device `pyttsx3` when offline or on failure | `ELEVENLABS_API_KEY` |
+| Buzzer | Arduino buzzer on pin 7 sounds on fall / SOS (firmware not yet verified on hardware) | `BUZZ:<ms>` serial command |
+| Alert latency log | Alert created to audio start, per route, in `exports/alert_latency.csv` | `LATENCY_LOG_ENABLED` |
+
+# Testing
+
+The unit tests run with no camera, Arduino, microphone, GPU, model download or API key:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Fake serial, camera, audio, Twilio and LLM layers are injected and time is simulated, so state-machine timing is deterministic. They cover fall transitions and confirmation latency, tilt and pre-fall alerts, noisy / dropped / NaN IMU data, serial disconnect and recovery, SOS cooldown / retry / non-blocking dispatch, automatic escalation and cancel, offline voice and offline speech fallback, LLM circuit-breaker recovery, the orchestration pipeline, the evaluation tooling, and a scan for committed secrets. CI ([workflow](.github/workflows/tests.yml)) runs them on Python 3.10 and 3.12, plus lint and a coverage report.
+
+These are regression tests. They show the code does what it was written to do, not that it detects real falls; for that see [docs/EVALUATION.md](docs/EVALUATION.md).
+
+# Offline evaluation
+
+```bash
+# 1. Record a real session (set in .env): SENSOR_RECORD_PATH=session.jsonl
+# 2. Replay it with different thresholds, no need to repeat the falls
+python tools/replay_trace.py session.jsonl --timeline --set FALL_ACCEL_G=3.2
+
+# 3. Score the detector on a public dataset laid out in SisFall format
+python tools/dataset_eval.py /path/to/SisFall --out evaluation/sisfall_report.md
+```
+
+Dataset results describe the algorithm on that dataset, not this device.
+
+# Dependencies
+
+`requirements.in` is the editable list; `requirements.txt` is the compiled, pinned lockfile (`uv pip compile requirements.in --universal --only-binary :all: --python-version 3.10`). Dependabot proposes updates.
+
+# Security
+
+Credentials live in `.env`, never in source; see [docs/SECURITY.md](docs/SECURITY.md), including how to rotate the Twilio credential that was committed in the past.
+
+# Models
+
+Which weight each feature uses, plus source, licence and SHA-256, is in [docs/MODELS.md](docs/MODELS.md). Verify with `python tools/verify_models.py`.

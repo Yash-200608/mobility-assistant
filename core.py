@@ -38,6 +38,13 @@ class CircuitBreaker:
                 return False
             return False
 
+    def release_probe(self):
+        """Hand back a HALF_OPEN trial that never ran (e.g. no network), so the
+        breaker is not left stuck in HALF_OPEN, which refuses every later call."""
+        with self.lock:
+            if self.state == "HALF_OPEN":
+                self.state = "OPEN"
+
     def record_success(self):
         with self.lock:
             self.failures = 0
@@ -69,8 +76,10 @@ class SystemState:
         self.latest_frame = None
         self.latest_detections: list = []
         self.alert_queue = queue.Queue(maxsize=15)
-        self._llm_last_call_mono: float = 0.0
-        self._last_sos_mono: float = 0.0
+        # -inf, not 0.0: time.monotonic() counts from boot on Linux/Pi, so a 0.0
+        # start would suppress the first SOS/LLM call right after a fresh boot.
+        self._llm_last_call_mono: float = float("-inf")
+        self._last_sos_mono: float = float("-inf")
         self._last_gait_metrics: Optional[Dict[str, Any]] = None
         self._rehab_llm_context: str = ""
         self._last_mic_rms: float = 0.0
@@ -106,6 +115,11 @@ class SystemState:
                 return False
             self._last_sos_mono = now
             return True
+
+    def rearm_sos_after_failure(self, cooldown_sec: float, retry_sec: float):
+        """A send failed: allow the next attempt after retry_sec rather than cooldown_sec."""
+        with self._lock:
+            self._last_sos_mono = time.monotonic() - max(0.0, cooldown_sec - retry_sec)
 
     def set_gait_metrics(self, metrics: Optional[Dict[str, Any]]):
         with self._lock:

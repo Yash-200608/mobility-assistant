@@ -48,6 +48,7 @@ def ask_mobility_llm(user_message: str, client: Groq) -> Optional[str]:
         return None
     if not is_internet_available():
         logger.info("Offline: skipping online LLM.")
+        llm_circuit.release_probe()
         return None
 
     ctx = mobility_context_snapshot()
@@ -65,6 +66,7 @@ def ask_mobility_llm(user_message: str, client: Groq) -> Optional[str]:
         if text:
             llm_circuit.record_success()
             return text
+        llm_circuit.release_probe()
     except Exception as e:
         logger.error(f"Online LLM error: {type(e).__name__}: {e}")
         llm_circuit.record_failure()

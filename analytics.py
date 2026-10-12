@@ -13,28 +13,35 @@ class FallDetector:
         self.last_tilt_alert: float = 0
         self.recovery_start: Optional[float] = None
         self.post_fall_still_count: int = 0
+        # Samples taken after the impact has settled. Stillness is judged on these
+        # only: averaging in the impact spike made harder falls confirm *slower*.
+        self.post_impact = deque(maxlen=10)
 
-    def process(self, sensor: Dict[str, float]) -> Optional[str]:
+    def _enter_falling(self, now: float) -> None:
+        self.state = "FALLING"
+        self.fall_time = now
+        self.post_fall_still_count = 0
+        self.post_impact.clear()
+
+    def process(self, sensor: Dict[str, float], now: Optional[float] = None) -> Optional[str]:
+        """Advance one sample. ``now`` lets replay/simulation supply its own clock."""
         pitch = sensor.get("pitch", 0.0)
         roll = sensor.get("roll", 0.0)
         accel_mag = sensor.get("accel_mag", 1.0)
         self.accel_history.append(accel_mag)
-        avg_accel = sum(self.accel_history) / len(self.accel_history) if self.accel_history else 1.0
-        current_time = time.time()
+        current_time = now if now is not None else time.time()
         alert = None
 
         if self.state == "UPRIGHT":
             if accel_mag > Config.FALL_ACCEL_G:
-                self.state = "FALLING"
-                self.fall_time = current_time
+                self._enter_falling(current_time)
                 logger.warning("Fall detected! Accel spike.")
             elif abs(pitch) > Config.TILT_WARN_PITCH or abs(roll) > Config.TILT_WARN_ROLL:
                 self.state = "TILT_WARNING"
 
         elif self.state == "TILT_WARNING":
             if abs(pitch) > Config.FALL_PITCH_DEG or abs(roll) > Config.FALL_ROLL_DEG:
-                self.state = "FALLING"
-                self.fall_time = current_time
+                self._enter_falling(current_time)
             elif abs(pitch) < (Config.TILT_WARN_PITCH * 0.7) and abs(roll) < (Config.TILT_WARN_ROLL * 0.7):
                 self.state = "UPRIGHT"
             else:
@@ -43,8 +50,10 @@ class FallDetector:
                     self.last_tilt_alert = current_time
 
         elif self.state == "FALLING":
-            if self.fall_time and current_time - self.fall_time > 0.3:
-                if avg_accel < Config.FALL_STILL_THRESH:
+            if self.fall_time is not None and current_time - self.fall_time > Config.FALL_SETTLE_SEC:
+                self.post_impact.append(accel_mag)
+                post_avg = sum(self.post_impact) / len(self.post_impact)
+                if post_avg < Config.FALL_STILL_THRESH:
                     self.post_fall_still_count += 1
                     if self.post_fall_still_count >= Config.FALL_CONFIRM_FRAMES:
                         self.state = "FALLEN"

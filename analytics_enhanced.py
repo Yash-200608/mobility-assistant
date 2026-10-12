@@ -73,10 +73,11 @@ class PreFallDetector:
         self._pt = 0.0
         self._last_alert = 0.0
 
-    def process(self, sensors: Dict[str, float], fall_state: str = "UPRIGHT") -> Optional[str]:
+    def process(self, sensors: Dict[str, float], fall_state: str = "UPRIGHT",
+                now: Optional[float] = None) -> Optional[str]:
         if fall_state not in ("UPRIGHT", "TILT_WARNING"):
             return None
-        now = time.time()
+        now = now if now is not None else time.time()
         if now - self._last_alert < Config.PREFALL_ALERT_INTERVAL:
             return None
         pitch = float(sensors.get("pitch", 0.0))

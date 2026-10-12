@@ -1,6 +1,6 @@
 # AI Mobility Assistant: Full Project Context & System Architecture
 
-**Status:** Active clinical rehabilitation system in development  
+**Status:** Research prototype in development. Not a medical device; not clinically validated.  
 **Last Updated:** April 2026  
 **Scope:** Real-time vision, sensor fusion, fall detection, gait analysis, voice interaction  
 
@@ -10,7 +10,7 @@
 
 ### Mission
 
-The AI Mobility Assistant is a hybrid edge-cloud rehabilitation support system designed for patients recovering from surgery, stroke, or neurological conditions. It combines:
+The AI Mobility Assistant is a hybrid edge-cloud research prototype exploring rehabilitation support for people recovering from surgery, stroke, or neurological conditions. It has not been validated with patients. It combines:
 
 - **Live computer vision** (YOLOv8, MediaPipe pose) for obstacle detection and gait analysis
 - **Hardware sensor fusion** (IMU, ultrasonic, pressure, GPS) for physical safety
@@ -124,11 +124,31 @@ Wake-word routing; offline gait/mode; LLM for long/detail utterances.
 
 #### `sos.py`
 
-Twilio SMS + TTS confirmation; shared cooldown; **`SOS_VOICE_REQUIRES_WAKE`** default **true** (no-wake phrases only if set false in config/env).
+Twilio SMS dispatched on a background thread (never stalls the safety loop), with retries and an honest failure alert; shared cooldown, shortened after a failed send; **`SOS_VOICE_REQUIRES_WAKE`** default **true** (no-wake phrases only if set false in config/env). `trigger_sos(source, block=False)`; sources: `hardware`, `voice`, `fall`.
+
+#### `escalation.py`
+
+`FallEscalator`: after a confirmed fall, opens a cancel window (`FALL_ESCALATION_SEC`); an unanswered window sends an SOS (`source="fall"`). Cancelled by voice ("I'm okay", no wake word needed) or by getting back up. Disabled unless `FALL_AUTO_SOS=true`.
+
+#### `pipeline.py`
+
+`HardwareSafety` (SOS button, fall state machine, pre-fall, escalation, buzzer) and `WalkerAnalytics` (gait, posture, coaching, research log). No OpenCV or serial, so they run on a simulated clock in tests and in `tools/demo_sim.py`.
+
+#### `navigation.py`
+
+`ObjectTracker`, `estimate_dist`, `NavigationAdvisor`: stick-mode tracking and spoken direction advice. Pure logic.
+
+#### `speech.py`, `local_tts.py`
+
+`AlertSpeaker` routes each alert to ElevenLabs when it works and to on-device `pyttsx3` otherwise (circuit-breaker protected), and `LatencyRecorder` logs alert-to-audio latency.
+
+#### `sensors.py`
+
+`validate_payload`: the one place sensor JSON is coerced, clamped and NaN/inf-filtered; shared by the live serial loop and offline replay.
 
 #### `main.py`
 
-Orchestrator, HUD, stick vs walker branches, hardware SOS when fused.
+Thin loop: captures state, calls `pipeline` / `navigation`, draws the HUD.
 
 ---
 
@@ -136,7 +156,9 @@ Orchestrator, HUD, stick vs walker branches, hardware SOS when fused.
 
 ### 4.1 Notable `config.py` / env vars
 
-- API keys: `GROQ_API_KEY`, `ELEVENLABS_API_KEY`, Twilio + `EMERGENCY_PHONE`
+- API keys: `GROQ_API_KEY`, `ELEVENLABS_API_KEY`; Twilio via `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_PHONE`, `EMERGENCY_PHONE` (all from `.env`)
+- `FALL_AUTO_SOS` (default false), `FALL_ESCALATION_SEC` (20), `SOS_SEND_ATTEMPTS`, `SOS_RETRY_SEC`
+- `SENSOR_RECORD_PATH` (record the raw serial stream), `LATENCY_LOG_ENABLED`
 - `SAFETY_RUN_MODE`: `software_only` | `fused` | `hardware_strict`
 - `STT_BACKEND`, `LOCAL_STT_*`, `ARDUINO_BAUD` (default **57600**)
 - `SOS_COOLDOWN_SEC`, `SOS_VOICE_PHRASES`, `SOS_VOICE_REQUIRES_WAKE`
@@ -156,7 +178,7 @@ Store secrets in **`.env`** (gitignored), not in source.
 ## 5. THREAD TOPOLOGY
 
 Main thread: display + safety HUD + pose/stick logic.  
-Daemons: `HardwareManager`, camera, YOLO, speak, `audio_listener`.  
+Daemons: `HardwareManager`, camera, YOLO, speak, `audio_listener`; short-lived `SOSDispatch` threads for SMS delivery.  
 Shared state: `global_state` (`RLock`) + `alert_queue`.
 
 ---
@@ -169,7 +191,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Flash `mobility_assistant.ino`; match **57600** baud with Python.
+Flash `mobility_assistant.ino`; match **57600** baud with Python. Optional buzzer: active buzzer on pin 7 (driven by the `BUZZ:<ms>` command).
 
 ---
 
@@ -188,12 +210,19 @@ Flash `mobility_assistant.ino`; match **57600** baud with Python.
 | `llm_online.py`, `voice_commands.py` | LLM + voice routing |
 | `sos.py` | Emergency SMS + voice/hardware |
 | `requirements.txt` | Python dependencies |
-| `docs/COMPLETE_DELIVERABLES_PATH_A_B.md` | Path A+B deliverables index, reading order, checklist (companion docs listed there) |
+| `escalation.py` | Automatic SOS after a confirmed fall, with a cancel window |
+| `pipeline.py` | `HardwareSafety`, `WalkerAnalytics`: orchestration logic extracted from `main.py` |
+| `navigation.py` | Object tracking and spoken navigation advice |
+| `speech.py`, `local_tts.py` | Cloud/on-device voice routing, alert latency log |
+| `sensors.py` | Shared sensor payload validation |
+| `tools/` | Simulator, trace replay, dataset evaluation, metrics, model verification |
+| `models.lock.json` | SHA-256 and provenance for model weights |
+| `docs/` | Evaluation protocol, model provenance, security notes (see `docs/README.md`) |
 | `analytics_enhanced.py` | Gait fingerprint, MET proxy, posture/slouch, pre-fall tilt rate, phase asymmetry, stride proxy, fall-direction hint, rehab tracker, adaptive LLM hints |
 | `research_log.py` | Append-only CSV in `exports/session_*.csv` |
 | `audio_fallcontext.py` | Loud transient detector (mic RMS) |
 | `clinical_dashboard.py` | JSON session summary on exit |
-| `tests/test_analytics_enhanced.py` | Unit tests for enhanced analytics |
+| `tests/` | Hardware-free unit tests (state machines, serial, SOS, escalation, voice/LLM, pipeline, tooling, secrets scan) |
 
 ---
 

@@ -1,0 +1,25 @@
+{
+  "_comment": "Identity of every model artifact this project depends on. The SHA-256 is the source of truth; verify with: python tools/verify_models.py",
+  "artifacts": [
+    {
+      "path": "yolov8s.pt",
+      "sha256": "1f47a78bf100391c2a140b7ac73a1caae18c32779be7d310658112f7ac9aa78a",
+      "size_bytes": 22588772,
+      "role": "Obstacle detection (io_services.local_vision_thread, via Config.LOCAL_MODEL_WEIGHTS default)",
+      "used_by_code": true,
+      "source": "Ultralytics YOLOv8 pretrained COCO weights, https://github.com/ultralytics/assets/releases",
+      "license": "AGPL-3.0 (Ultralytics; commercial licence available from Ultralytics)",
+      "acquisition": "Committed in this repo; or download from the source above and place in the repo root"
+    },
+    {
+      "path": "yolov8n.pt",
+      "sha256": "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36",
+      "size_bytes": 6549796,
+      "role": "Smaller YOLOv8 variant. Not referenced by any code path or default config; usable by setting LOCAL_MODEL_WEIGHTS=yolov8n.pt",
+      "used_by_code": false,
+      "source": "Ultralytics YOLOv8 pretrained COCO weights, https://github.com/ultralytics/assets/releases",
+      "license": "AGPL-3.0 (Ultralytics; commercial licence available from Ultralytics)",
+      "acquisition": "Committed in this repo; or download from the source above and place in the repo root"
+    }
+  ]
+}

@@ -18,3 +18,13 @@ Thumbs.db
 # Temp
 *.tmp
 *.mp3
+# Generated output
+out.txt
+
+# Local session logs (generated at runtime). One sample is kept for reference.
+exports/*
+!exports/.gitkeep
+!exports/sample_session.csv
+.ruff_cache/
+.coverage
+coverage.txt

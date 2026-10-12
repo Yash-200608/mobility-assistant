@@ -8,6 +8,7 @@
 #define US_FLOOR_TRIG  4
 #define US_FLOOR_ECHO  5
 #define SOS_BUTTON_PIN 6
+#define BUZZER_PIN     7   // active buzzer, driven HIGH while an alarm is on
 #define GPS_RX_PIN    10
 #define GPS_TX_PIN    11
 
@@ -32,6 +33,35 @@ static unsigned long lastLoopMs = 0;
 
 static int frontFail = 0;
 static int floorFail = 0;
+
+// Host -> Arduino: "BUZZ:<ms>\n" sounds the buzzer for <ms> milliseconds
+// (BUZZ:0 silences it). Non-blocking, so sensor timing is unaffected.
+static unsigned long buzzUntilMs = 0;
+static char cmdBuf[16];
+static uint8_t cmdLen = 0;
+
+static void handleCommand(const char *cmd) {
+  if (strncmp(cmd, "BUZZ:", 5) == 0) {
+    long ms = atol(cmd + 5);
+    if (ms <= 0)         buzzUntilMs = 0;
+    else if (ms > 10000) buzzUntilMs = millis() + 10000UL;  // cap at 10 s
+    else                 buzzUntilMs = millis() + (unsigned long)ms;
+  }
+}
+
+static void pollCommands() {
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (cmdLen > 0) { cmdBuf[cmdLen] = '\0'; handleCommand(cmdBuf); cmdLen = 0; }
+    } else if (cmdLen < sizeof(cmdBuf) - 1) {
+      cmdBuf[cmdLen++] = c;
+    } else {
+      cmdLen = 0;  // overlong line: discard
+    }
+  }
+  digitalWrite(BUZZER_PIN, (buzzUntilMs != 0 && (long)(buzzUntilMs - millis()) > 0) ? HIGH : LOW);
+}
 
 static void drainGPS() {
   while (gpsSerial.available() > 0) {
@@ -74,6 +104,7 @@ void setup() {
   pinMode(US_FLOOR_TRIG, OUTPUT); digitalWrite(US_FLOOR_TRIG, LOW);
   pinMode(US_FLOOR_ECHO, INPUT);
   pinMode(SOS_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(BUZZER_PIN, OUTPUT); digitalWrite(BUZZER_PIN, LOW);
 
   
   mpu.verbose(false);
@@ -86,7 +117,7 @@ void setup() {
 }
 
 void loop() {
-  
+  pollCommands();
   drainGPS();
 
   
@@ -155,6 +186,6 @@ void loop() {
   unsigned long elapsed = millis() - now;
   if (elapsed < 50UL) {
     unsigned long waitUntil = now + 50UL;
-    while (millis() < waitUntil) drainGPS();
+    while (millis() < waitUntil) { drainGPS(); pollCommands(); }
   }
 }

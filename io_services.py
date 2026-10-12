@@ -11,9 +11,12 @@ import groq
 from elevenlabs.client import ElevenLabs
 from config import Config
 from core import global_state, vision_circuit, logger
+from escalation import fall_escalator
 from sos import try_voice_sos_from_transcript
+from speech import AlertSpeaker, LatencyRecorder
 from stt_service import stt_configured, transcribe_microphone_chunk
 from voice_commands import handle_wake_utterance
+import local_tts
 
 groq_client = groq.Groq(api_key=Config.GROQ_API_KEY) if Config.GROQ_API_KEY else None
 el_client = ElevenLabs(api_key=Config.ELEVENLABS_API_KEY) if Config.ELEVENLABS_API_KEY else None
@@ -41,61 +44,79 @@ def get_audio_devices():
     return (None if in_idx == -1 else in_idx,
             None if out_idx == -1 else out_idx)
 
-_bt_in_idx, _bt_out_idx = get_audio_devices()
+_bt_in_idx = None
+_bt_out_idx = None
 
-if _bt_in_idx is not None:
-    sd.default.device[0] = _bt_in_idx
-    logger.info(f"Bluetooth mic input  → device index {_bt_in_idx}: {sd.query_devices()[_bt_in_idx]['name']}")
-else:
-    logger.info("Bluetooth mic: not configured, using system default input.")
+def init_audio() -> None:
+    """Open audio devices. Called from start_io_services(), not at import, so
+    importing this module on a machine with no audio hardware has no side effects."""
+    global _bt_in_idx, _bt_out_idx
+    _bt_in_idx, _bt_out_idx = get_audio_devices()
 
-if _bt_out_idx is not None:
-    sd.default.device[1] = _bt_out_idx
-    logger.info(f"Bluetooth audio output → device index {_bt_out_idx}: {sd.query_devices()[_bt_out_idx]['name']}")
-else:
-    logger.info("Bluetooth output: not configured, using system default output.")
+    if _bt_in_idx is not None:
+        sd.default.device[0] = _bt_in_idx
+        logger.info(f"Bluetooth mic input  → device index {_bt_in_idx}: {sd.query_devices()[_bt_in_idx]['name']}")
+    else:
+        logger.info("Bluetooth mic: not configured, using system default input.")
 
-# ── Pygame init ───────────────────────────────────────────────────────────────
-try:
-    pygame.mixer.init(frequency=Config.PYGAME_FREQ, size=-16, channels=2, buffer=512)
-except Exception as e:
-    logger.error(f"Pygame init failed: {e}")
+    if _bt_out_idx is not None:
+        sd.default.device[1] = _bt_out_idx
+        logger.info(f"Bluetooth audio output → device index {_bt_out_idx}: {sd.query_devices()[_bt_out_idx]['name']}")
+    else:
+        logger.info("Bluetooth output: not configured, using system default output.")
 
-# ── Threads ───────────────────────────────────────────────────────────────────
+    try:
+        pygame.mixer.init(frequency=Config.PYGAME_FREQ, size=-16, channels=2, buffer=512)
+    except Exception as e:
+        logger.error(f"Pygame init failed: {e}")
+
+# ── Speech ────────────────────────────────────────────────────────────────────
+latency_recorder = LatencyRecorder(
+    csv_path=os.path.join(Config.RESEARCH_EXPORT_DIR, "alert_latency.csv") if Config.LATENCY_LOG_ENABLED else None
+)
+
+def _cloud_speak(text, on_start):
+    audio_gen = el_client.text_to_speech.convert(
+        text=text, voice_id=Config.ELEVENLABS_VOICE_ID,
+        model_id=Config.ELEVENLABS_MODEL, output_format="mp3_44100_128"
+    )
+    audio_bytes = b"".join(list(audio_gen))
+    if len(audio_bytes) < 100:
+        raise RuntimeError("ElevenLabs returned empty or invalid audio payload")
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+            fp.write(audio_bytes)
+            tmp_path = fp.name
+        pygame.mixer.music.load(tmp_path)
+        on_start()
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy() and not global_state.is_shutting_down:
+            time.sleep(0.1)
+    finally:
+        pygame.mixer.music.unload()
+        if tmp_path and os.path.exists(tmp_path):
+            try: os.unlink(tmp_path)
+            except PermissionError: pass
+
 def speak_thread():
+    speaker = AlertSpeaker(
+        cloud_speak=_cloud_speak if el_client else None,
+        local_speak=local_tts.speak,
+        recorder=latency_recorder,
+    )
     if not el_client:
-        logger.warning("TTS thread disabled — missing API key.")
-        return
+        logger.warning("Cloud TTS disabled (no ELEVENLABS_API_KEY): using on-device voice.")
     while not global_state.is_shutting_down:
         try:
             timestamp, text = global_state.alert_queue.get(timeout=1.0)
-            if time.time() - timestamp > 8.0: continue
-
             logger.info(f"Speaking: {text}")
-            audio_gen = el_client.text_to_speech.convert(
-                text=text, voice_id=Config.ELEVENLABS_VOICE_ID,
-                model_id=Config.ELEVENLABS_MODEL, output_format="mp3_44100_128"
-            )
-            audio_bytes = b"".join(list(audio_gen))
-
-            if len(audio_bytes) < 100:
-                logger.error("ElevenLabs returned empty or invalid audio payload.")
+            outcome = speaker.handle(timestamp, text)
+            if outcome == "stale":
                 continue
-
-            tmp_path = None
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-                    fp.write(audio_bytes)
-                    tmp_path = fp.name
-                pygame.mixer.music.load(tmp_path)
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy() and not global_state.is_shutting_down:
-                    time.sleep(0.1)
-            finally:
-                pygame.mixer.music.unload()
-                if tmp_path and os.path.exists(tmp_path):
-                    try: os.unlink(tmp_path)
-                    except PermissionError: pass
+            if outcome == "silent":
+                logger.error("No speech backend available; alert shown on HUD only.")
         except queue.Empty:
             continue
         except Exception as e:
@@ -138,6 +159,10 @@ def audio_listener():
             text_l = text.lower().strip()
             logger.info(f"[STT] transcript: '{text_l}'")
 
+            # A fallen user may not remember the wake word: cancelling a pending
+            # automatic SOS must work without it.
+            if fall_escalator.try_cancel_from_transcript(text_l):
+                continue
             if try_voice_sos_from_transcript(text_l):
                 continue
             if Config.WAKE_WORD not in text_l:
@@ -226,5 +251,6 @@ def local_vision_thread():
             time.sleep(2.0)
 
 def start_io_services():
+    init_audio()
     for target in [camera_thread, speak_thread, audio_listener, local_vision_thread]:
         threading.Thread(target=target, daemon=True).start()

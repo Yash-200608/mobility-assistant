@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # requirements.txt is a compiled lockfile; Dependabot proposes bumps for it.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

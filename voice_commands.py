@@ -6,6 +6,7 @@ from groq import Groq
 
 from config import Config
 from core import global_state
+from escalation import fall_escalator
 from llm_online import ask_mobility_llm, is_internet_available
 
 GAIT_TIPS = [
@@ -131,6 +132,9 @@ def handle_wake_utterance(text: str, groq_client: Optional[Groq]) -> None:
     wake = Config.WAKE_WORD.lower()
     remainder = text_l.replace(wake, " ")
     remainder = " ".join(remainder.split()).strip()
+
+    if fall_escalator.try_cancel_from_transcript(text_l):
+        return
 
     if "stop alerts" in text_l:
         global_state.set_alerts_enabled(False)

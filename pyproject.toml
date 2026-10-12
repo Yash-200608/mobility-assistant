@@ -1,0 +1,24 @@
+[project]
+name = "mobility-assistant"
+version = "0.1.0"
+description = "Research prototype: real-time gait analysis, fall detection and assistive navigation"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["exports"]
+
+[tool.ruff.lint]
+# Hard errors only (syntax errors, undefined names, invalid constructs). Style rules
+# are intentionally not enforced: this is the correctness gate CI runs.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "tools/__init__.py"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
+show_missing = true

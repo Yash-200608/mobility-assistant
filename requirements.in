@@ -6,7 +6,7 @@ pyserial>=3.5
 sounddevice>=0.4
 pygame>=2.5
 groq>=0.4
-elevenlabs>=1.2
+elevenlabs>=2.74.1
 twilio
 ultralytics
 requests>=2.31
